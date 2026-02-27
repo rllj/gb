@@ -43,11 +43,12 @@ const Pins = packed struct(u64) {
     dbus: u8 = 0,
     abus: u16 = 0,
 
-    pub fn set(self: Pins, comptime pins: Pins) Pins {
+    pub fn set(self: Pins, pins: anytype) Pins {
         var result: Pins = self;
-        inline for (@typeInfo(Pins).@"struct".fields) |field| {
-            @field(result, field.name) = @field(pins, field);
+        inline for (@typeInfo(@TypeOf(pins)).@"struct".fields) |field| {
+            @field(result, field.name) = @field(pins, field.name);
         }
+        return result;
     }
 };
 
@@ -112,7 +113,19 @@ const IE = 0xFFFF;
 
 pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
     var bus = input_bus;
-    _ = &bus;
+
+    if (cpu.state.cycle == 0) {
+        cpu.state.opcode = bus.dbus;
+    }
+
+    bus = bus.set(.{
+        .rd = 0,
+        .wr = 0,
+        .mreq = 0,
+        .m1 = 0,
+        .abus = 0,
+    });
+
     if (cpu.should_set_ime) {
         cpu.ime = true;
         cpu.should_set_ime = false;
@@ -251,7 +264,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.state.cycle += 1;
         },
         inst_state(0o02, 1) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
         // LD A, (BC)
         inst_state(0o12, 0) => {
@@ -260,7 +273,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
         inst_state(0o12, 1) => {
             cpu.registers.a = bus.dbus;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD (DE), A
@@ -269,7 +282,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.state.cycle += 1;
         },
         inst_state(0o22, 1) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
         // LD A, (DE)
         inst_state(0o32, 0) => {
@@ -278,7 +291,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
         inst_state(0o32, 1) => {
             cpu.registers.a = bus.dbus;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD (HL+), A
@@ -289,7 +302,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.state.cycle += 1;
         },
         inst_state(0o42, 1) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD A, (HL+)
@@ -301,7 +314,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
         inst_state(0o52, 1) => {
             cpu.registers.a = bus.dbus;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD (HL-), A
@@ -312,7 +325,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.state.cycle += 1;
         },
         inst_state(0o62, 1) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD A, (HL-)
@@ -324,19 +337,19 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
         inst_state(0o72, 1) => {
             cpu.registers.a = bus.dbus;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // zig fmt: off
         // Add A, r
-        inst_state(0o200, 0)...inst_state(0o205), inst_state(0o207),
-        inst_state(0o210, 0)...inst_state(0o215), inst_state(0o217),
-        inst_state(0o220, 0)...inst_state(0o225), inst_state(0o227),
-        inst_state(0o230, 0)...inst_state(0o235), inst_state(0o237),
-        inst_state(0o240, 0)...inst_state(0o245), inst_state(0o247),
-        inst_state(0o250, 0)...inst_state(0o255), inst_state(0o257),
-        inst_state(0o260, 0)...inst_state(0o265), inst_state(0o267),
-        inst_state(0o270, 0)...inst_state(0o275), inst_state(0o277),
+        inst_state(0o200, 0)...inst_state(0o205, 0), inst_state(0o207, 0),
+        inst_state(0o210, 0)...inst_state(0o215, 0), inst_state(0o217, 0),
+        inst_state(0o220, 0)...inst_state(0o225, 0), inst_state(0o227, 0),
+        inst_state(0o230, 0)...inst_state(0o235, 0), inst_state(0o237, 0),
+        inst_state(0o240, 0)...inst_state(0o245, 0), inst_state(0o247, 0),
+        inst_state(0o250, 0)...inst_state(0o255, 0), inst_state(0o257, 0),
+        inst_state(0o260, 0)...inst_state(0o265, 0), inst_state(0o267, 0),
+        inst_state(0o270, 0)...inst_state(0o275, 0), inst_state(0o277, 0),
         => {
             const reg = cpu.reg_decode(z).*;
             cpu.alu_decode(y, reg);
@@ -395,11 +408,11 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
 
         // LDH (C), A
-        inst_state(0x342, 0) => {
+        inst_state(0o342, 0) => {
             bus = mem_write(bus, pair(0xFF, cpu.registers.c), cpu.registers.a);
             cpu.state.cycle += 1;
         },
-        inst_state(0x342, 1) => {
+        inst_state(0o342, 1) => {
             bus = cpu.fetch_and_decode(bus);
         },
 
@@ -429,7 +442,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
         inst_state(0o362, 1) => {
             cpu.registers.a = bus.dbus;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD A, (imm16)
@@ -439,7 +452,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
         inst_state(0o372, 1) => {
             cpu.z = bus.dbus;
-            bus = cpu.fetch_pc();
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0o372, 2) => {
@@ -449,7 +462,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
         inst_state(0o372, 3) => {
             cpu.registers.a = bus.dbus;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LDH (imm8), A
@@ -537,168 +550,122 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.state.cycle += 1;
         },
         inst_state(0xF9, 1) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD BC, imm16
         inst_state(0x01, 0) => {
-            cpu.z = cpu.fetch_pc();
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x01, 1) => {
-            cpu.w = cpu.fetch_pc();
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x01, 2) => {
+            cpu.w = bus.dbus;
             cpu.registers.setbc(cpu.wz());
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD DE, imm16
         inst_state(0x11, 0) => {
-            cpu.z = cpu.fetch_pc();
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x11, 1) => {
-            cpu.w = cpu.fetch_pc();
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x11, 2) => {
+            cpu.w = bus.dbus;
             cpu.registers.setde(cpu.wz());
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD HL, imm16
         inst_state(0x21, 0) => {
-            cpu.z = cpu.fetch_pc();
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x21, 1) => {
-            cpu.w = cpu.fetch_pc();
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x21, 2) => {
+            cpu.w = bus.dbus;
             cpu.registers.sethl(cpu.wz());
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD SP, imm16
         inst_state(0x31, 0) => {
-            cpu.z = cpu.fetch_pc();
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x31, 1) => {
-            cpu.w = cpu.fetch_pc();
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0x31, 2) => {
+            cpu.w = bus.dbus;
             cpu.registers.sp = cpu.wz();
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // ADD HL, BC
-        inst_state(0x09, 0) => {
-            cpu.add_pair_to_hl(.bc);
+        // ADD HL, rr
+        inst_state(0x09, 0),
+        inst_state(0x19, 0),
+        inst_state(0x29, 0),
+        inst_state(0x39, 0),
+        => {
+            cpu.add_pair_to_hl(@truncate(cpu.state.opcode >> 4));
             cpu.state.cycle += 1;
         },
-        inst_state(0x09, 1) => {
-            cpu.fetch_and_decode();
-        },
-        // ADD HL, DE
-        inst_state(0x19, 0) => {
-            cpu.add_pair_to_hl(.de);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x19, 1) => {
-            cpu.fetch_and_decode();
-        },
-        // ADD HL, HL
-        inst_state(0x29, 0) => {
-            cpu.add_pair_to_hl(.hl);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x29, 1) => {
-            cpu.fetch_and_decode();
-        },
-        // ADD HL, SP
-        inst_state(0x39, 0) => {
-            cpu.add_pair_to_hl(.sp);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x39, 1) => {
-            cpu.fetch_and_decode();
+        inst_state(0x09, 1),
+        inst_state(0x19, 1),
+        inst_state(0x29, 1),
+        inst_state(0x39, 1),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // DEC bc
-        inst_state(0x0B, 0) => {
-            cpu.dec16(.bc);
+        // DEC rr
+        inst_state(0x0B, 0),
+        inst_state(0x1B, 0),
+        inst_state(0x2B, 0),
+        inst_state(0x3B, 0),
+        => {
+            cpu.dec16(@truncate(cpu.state.opcode >> 4));
             cpu.state.cycle += 1;
         },
-        inst_state(0x0B, 1) => {
-            cpu.fetch_and_decode();
-        },
-
-        // DEC de
-        inst_state(0x1B, 0) => {
-            cpu.dec16(.de);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x1B, 1) => {
-            cpu.fetch_and_decode();
-        },
-
-        // DEC hl
-        inst_state(0x2B, 0) => {
-            cpu.dec16(.hl);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x2B, 1) => {
-            cpu.fetch_and_decode();
-        },
-
-        // DEC sp
-        inst_state(0x3B, 0) => {
-            cpu.dec16(.sp);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x3B, 1) => {
-            cpu.fetch_and_decode();
+        inst_state(0x0B, 1),
+        inst_state(0x1B, 1),
+        inst_state(0x2B, 1),
+        inst_state(0x3B, 1),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // INC bc
-        inst_state(0x03, 0) => {
-            cpu.inc16(.bc);
+        inst_state(0x03, 0),
+        inst_state(0x13, 0),
+        inst_state(0x23, 0),
+        inst_state(0x33, 0),
+        => {
+            cpu.inc16(@truncate(cpu.state.opcode >> 4));
             cpu.state.cycle += 1;
         },
-        inst_state(0x03, 1) => {
-            cpu.fetch_and_decode();
-        },
-
-        // INC de
-        inst_state(0x13, 0) => {
-            cpu.inc16(.de);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x13, 1) => {
-            cpu.fetch_and_decode();
-        },
-
-        // INC hl
-        inst_state(0x23, 0) => {
-            cpu.inc16(.hl);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x23, 1) => {
-            cpu.fetch_and_decode();
-        },
-
-        // INC sp
-        inst_state(0x33, 0) => {
-            cpu.inc16(.sp);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x33, 1) => {
-            cpu.fetch_and_decode();
+        inst_state(0x03, 1),
+        inst_state(0x13, 1),
+        inst_state(0x23, 1),
+        inst_state(0x33, 1),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // INC r
@@ -711,7 +678,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o74, 0),
         => {
             cpu.inc(cpu.reg_decode(y));
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // DEC r
@@ -724,34 +691,36 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o75, 0),
         => {
             cpu.dec(cpu.reg_decode(y));
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // INC (HL)
         inst_state(0o64, 0) => {
-            cpu.z = mem_read(bus, cpu.registers.hl());
+            bus = mem_read(bus, cpu.registers.hl());
             cpu.state.cycle += 1;
         },
         inst_state(0o64, 1) => {
+            cpu.z = bus.dbus;
             cpu.inc(&cpu.z);
-            mem_write(bus, cpu.registers.hl(), cpu.z);
+            bus = mem_write(bus, cpu.registers.hl(), cpu.z);
             cpu.state.cycle += 1;
         },
         inst_state(0o64, 2) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
         // DEC (HL)
         inst_state(0o65, 0) => {
-            cpu.z = mem_read(bus, cpu.registers.hl());
+            bus = mem_read(bus, cpu.registers.hl());
             cpu.state.cycle += 1;
         },
         inst_state(0o65, 1) => {
+            cpu.z = bus.dbus;
             cpu.dec(&cpu.z);
-            mem_write(bus, cpu.registers.hl(), cpu.z);
+            bus = mem_write(bus, cpu.registers.hl(), cpu.z);
             cpu.state.cycle += 1;
         },
         inst_state(0o65, 2) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // CCF
@@ -759,7 +728,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.registers.flags.n = false;
             cpu.registers.flags.h = false;
             cpu.registers.flags.c = !cpu.registers.flags.c;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // SCF
@@ -767,7 +736,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.registers.flags.n = false;
             cpu.registers.flags.h = false;
             cpu.registers.flags.c = true;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // DAA
@@ -781,755 +750,452 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.registers.a = ~cpu.registers.a;
             cpu.registers.flags.n = true;
             cpu.registers.flags.h = true;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // RLCA
         inst_state(0x07, 0) => {
-            cpu.rlc(&cpu.registers.a);
+            cpu.registers.a = cpu.rlc(cpu.registers.a);
             cpu.registers.flags.z = false;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // RRCA
         inst_state(0x0F, 0) => {
-            cpu.rrc(&cpu.registers.a);
+            cpu.registers.a = cpu.rrc(cpu.registers.a);
             cpu.registers.flags.z = false;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // RLA
         inst_state(0x17, 0) => {
-            cpu.rl(&cpu.registers.a);
+            cpu.registers.a = cpu.rl(cpu.registers.a);
             cpu.registers.flags.z = false;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // RRA
         inst_state(0x1F, 0) => {
-            cpu.rr(&cpu.registers.a);
+            cpu.registers.a = cpu.rr(cpu.registers.a);
             cpu.registers.flags.z = false;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // PUSH bc
-        inst_state(0xC5, 0) => {
+        // PUSH rr
+        inst_state(0xC5, 0),
+        inst_state(0xD5, 0),
+        inst_state(0xE5, 0),
+        inst_state(0xF5, 0),
+        => {
+            cpu.registers.sp -= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC5, 1) => {
-            cpu.push(msb(cpu.registers.bc()));
+        inst_state(0xC5, 1),
+        inst_state(0xD5, 1),
+        inst_state(0xE5, 1),
+        inst_state(0xF5, 1),
+        => {
+            cpu.setwz(cpu.reg_decode2(@truncate(cpu.state.opcode >> 4)));
+            bus = mem_write(bus, cpu.registers.sp, cpu.w);
+            cpu.registers.sp -= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC5, 2) => {
-            cpu.push(lsb(cpu.registers.bc()));
+        inst_state(0xC5, 2),
+        inst_state(0xD5, 2),
+        inst_state(0xE5, 2),
+        inst_state(0xF5, 2),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, cpu.z);
             cpu.state.cycle += 1;
         },
-        inst_state(0xC5, 3) => {
-            cpu.fetch_and_decode();
+        inst_state(0xC5, 3),
+        inst_state(0xD5, 3),
+        inst_state(0xE5, 3),
+        inst_state(0xF5, 3),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // PUSH de
-        inst_state(0xD5, 0) => {
+        // POP rr
+        inst_state(0xC1, 0),
+        inst_state(0xD1, 0),
+        inst_state(0xE1, 0),
+        inst_state(0xF1, 0),
+        => {
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xD5, 1) => {
-            cpu.push(msb(cpu.registers.de()));
+        inst_state(0xC1, 1),
+        inst_state(0xD1, 1),
+        inst_state(0xE1, 1),
+        inst_state(0xF1, 1),
+        => {
+            cpu.z = bus.dbus;
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xD5, 2) => {
-            cpu.push(lsb(cpu.registers.de()));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD5, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // PUSH hl
-        inst_state(0xE5, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE5, 1) => {
-            cpu.push(msb(cpu.registers.hl()));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE5, 2) => {
-            cpu.push(lsb(cpu.registers.hl()));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE5, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // PUSH af
-        inst_state(0xF5, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF5, 1) => {
-            cpu.push(msb(cpu.registers.af()));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF5, 2) => {
-            cpu.push(lsb(cpu.registers.af()));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF5, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // POP bc
-        inst_state(0xC1, 0) => {
-            cpu.z = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xC1, 1) => {
-            cpu.w = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xC1, 2) => {
-            cpu.registers.setbc(cpu.wz());
-            cpu.fetch_and_decode();
-        },
-
-        // POP de
-        inst_state(0xD1, 0) => {
-            cpu.z = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD1, 1) => {
-            cpu.w = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD1, 2) => {
-            cpu.registers.setde(cpu.wz());
-            cpu.fetch_and_decode();
-        },
-
-        // POP hl
-        inst_state(0xE1, 0) => {
-            cpu.z = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE1, 1) => {
-            cpu.w = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE1, 2) => {
-            cpu.registers.sethl(cpu.wz());
-            cpu.fetch_and_decode();
-        },
-
-        // POP af
-        inst_state(0xF1, 0) => {
-            cpu.z = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF1, 1) => {
-            cpu.w = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF1, 2) => {
-            cpu.registers.setaf(cpu.wz());
-            cpu.fetch_and_decode();
+        inst_state(0xC1, 2),
+        inst_state(0xD1, 2),
+        inst_state(0xE1, 2),
+        inst_state(0xF1, 2),
+        => {
+            cpu.w = bus.dbus;
+            cpu.set_reg_decode2(@truncate(cpu.state.opcode >> 4), cpu.wz());
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // JP imm16
         inst_state(0xC3, 0) => {
-            cpu.z = cpu.fetch_pc();
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0xC3, 1) => {
-            cpu.w = cpu.fetch_pc();
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
         inst_state(0xC3, 2) => {
+            cpu.w = bus.dbus;
             cpu.registers.pc = cpu.wz();
             cpu.state.cycle += 1;
         },
         inst_state(0xC3, 3) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
+        // JP HL
         inst_state(0xE9, 0) => {
             cpu.registers.pc = cpu.registers.hl();
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // JP NZ, imm16
-        inst_state(0xC2, 0) => {
-            cpu.z = cpu.fetch_pc();
+        // JP cond, imm16
+        inst_state(0o302, 0),
+        inst_state(0o312, 0),
+        inst_state(0o322, 0),
+        inst_state(0o332, 0),
+        => {
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
-        inst_state(0xC2, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (cpu.registers.flags.z) {
+        inst_state(0o302, 1),
+        inst_state(0o312, 1),
+        inst_state(0o322, 1),
+        inst_state(0o332, 1),
+        => {
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
+            const cond: Cond = @enumFromInt(@as(u2, @truncate(y)));
+            if (!cpu.get_cond(cond)) {
                 cpu.state.cycle += 1;
             }
             cpu.state.cycle += 1;
         },
-        inst_state(0xC2, 2) => {
+        inst_state(0o302, 2),
+        inst_state(0o312, 2),
+        inst_state(0o322, 2),
+        inst_state(0o332, 2),
+        => {
+            cpu.w = bus.dbus;
             cpu.registers.pc = cpu.wz();
             cpu.state.cycle += 1;
         },
-        inst_state(0xC2, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // JP NC, imm16
-        inst_state(0xD2, 0) => {
-            cpu.z = cpu.fetch_pc();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD2, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (cpu.registers.flags.c) {
-                cpu.state.cycle += 1;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD2, 2) => {
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD2, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // JP Z, imm16
-        inst_state(0xCA, 0) => {
-            cpu.z = cpu.fetch_pc();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCA, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (!cpu.registers.flags.z) {
-                cpu.state.cycle += 1;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCA, 2) => {
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCA, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // JP C, imm16
-        inst_state(0xDA, 0) => {
-            cpu.z = cpu.fetch_pc();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDA, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (!cpu.registers.flags.c) {
-                cpu.state.cycle += 1;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDA, 2) => {
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDA, 3) => {
-            cpu.fetch_and_decode();
+        inst_state(0o302, 3),
+        inst_state(0o312, 3),
+        inst_state(0o322, 3),
+        inst_state(0o332, 3),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // JP e
-        inst_state(0x18, 0) => {
-            cpu.z = cpu.fetch_pc();
+        inst_state(0o30, 0) => {
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
-        inst_state(0x18, 1) => {
+        inst_state(0o30, 1) => {
             cpu.registers.pc = add_signed(cpu.registers.pc, cpu.z);
             cpu.state.cycle += 1;
         },
-        inst_state(0x18, 2) => {
-            cpu.fetch_and_decode();
+        inst_state(0o30, 2) => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // JP NZ, e
-        inst_state(0x20, 0) => {
-            cpu.z = cpu.fetch_pc();
+        // JP cond, e
+        inst_state(0o40, 0),
+        inst_state(0o50, 0),
+        inst_state(0o60, 0),
+        inst_state(0o70, 0),
+        => {
+            bus = cpu.fetch_pc(bus);
 
-            if (cpu.registers.flags.z) {
+            const cond: Cond = @enumFromInt(@as(u2, @truncate(y)));
+            if (!cpu.get_cond(cond)) {
                 cpu.state.cycle += 1;
             }
             cpu.state.cycle += 1;
         },
-        inst_state(0x20, 1) => {
+        inst_state(0o40, 1),
+        inst_state(0o50, 1),
+        inst_state(0o60, 1),
+        inst_state(0o70, 1),
+        => {
+            cpu.z = bus.dbus;
             cpu.registers.pc = add_signed(cpu.registers.pc, cpu.z);
             cpu.state.cycle += 1;
         },
-        inst_state(0x20, 2) => {
-            cpu.fetch_and_decode();
-        },
-
-        // JP NC, e
-        inst_state(0x30, 0) => {
-            cpu.z = cpu.fetch_pc();
-
-            if (cpu.registers.flags.c) {
-                cpu.state.cycle += 1;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x30, 1) => {
-            cpu.registers.pc = add_signed(cpu.registers.pc, cpu.z);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x30, 2) => {
-            cpu.fetch_and_decode();
-        },
-
-        // JP Z, e
-        inst_state(0x28, 0) => {
-            cpu.z = cpu.fetch_pc();
-
-            if (!cpu.registers.flags.z) {
-                cpu.state.cycle += 1;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x28, 1) => {
-            cpu.registers.pc = add_signed(cpu.registers.pc, cpu.z);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x28, 2) => {
-            cpu.fetch_and_decode();
-        },
-        // JP C, e
-        inst_state(0x38, 0) => {
-            cpu.z = cpu.fetch_pc();
-
-            if (!cpu.registers.flags.c) {
-                cpu.state.cycle += 1;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x38, 1) => {
-            cpu.registers.pc = add_signed(cpu.registers.pc, cpu.z);
-            cpu.state.cycle += 1;
-        },
-        inst_state(0x38, 2) => {
-            cpu.fetch_and_decode();
+        inst_state(0o40, 2),
+        inst_state(0o50, 2),
+        inst_state(0o60, 2),
+        inst_state(0o70, 2),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // CALL imm16
-        inst_state(0xCD, 0) => {
-            cpu.z = cpu.fetch_pc();
+        inst_state(0o315, 0),
+        => {
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
-        inst_state(0xCD, 1) => {
-            cpu.w = cpu.fetch_pc();
+        inst_state(0o315, 1),
+        => {
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
-        inst_state(0xCD, 2) => {
+        inst_state(0o315, 2),
+        => {
+            cpu.w = bus.dbus;
             cpu.registers.sp -%= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xCD, 3) => {
-            mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
+        inst_state(0o315, 3),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
             cpu.registers.sp -%= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xCD, 4) => {
-            mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
+        inst_state(0o315, 4),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
             cpu.registers.pc = cpu.wz();
             cpu.state.cycle += 1;
         },
-        inst_state(0xCD, 5) => {
-            cpu.fetch_and_decode();
+        inst_state(0o315, 5),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // CALL NZ, imm16
-        inst_state(0xC4, 0) => {
-            cpu.z = cpu.fetch_pc();
+        // CALL cond, imm16
+        inst_state(0o304, 0),
+        inst_state(0o314, 0),
+        inst_state(0o324, 0),
+        inst_state(0o334, 0),
+        => {
+            bus = cpu.fetch_pc(bus);
             cpu.state.cycle += 1;
         },
-        inst_state(0xC4, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (cpu.registers.flags.z) {
+        inst_state(0o304, 1),
+        inst_state(0o314, 1),
+        inst_state(0o324, 1),
+        inst_state(0o334, 1),
+        => {
+            cpu.z = bus.dbus;
+            bus = cpu.fetch_pc(bus);
+            const cond: Cond = @enumFromInt(@as(u2, @truncate(y)));
+            if (!cpu.get_cond(cond)) {
                 cpu.state.cycle += 3;
             }
             cpu.state.cycle += 1;
         },
-        inst_state(0xC4, 2) => {
+        inst_state(0o304, 2),
+        inst_state(0o314, 2),
+        inst_state(0o324, 2),
+        inst_state(0o334, 2),
+        => {
+            cpu.w = bus.dbus;
             cpu.registers.sp -%= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC4, 3) => {
-            mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
+        inst_state(0o304, 3),
+        inst_state(0o314, 3),
+        inst_state(0o324, 3),
+        inst_state(0o334, 3),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
             cpu.registers.sp -%= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC4, 4) => {
-            mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
+        inst_state(0o304, 4),
+        inst_state(0o314, 4),
+        inst_state(0o324, 4),
+        inst_state(0o334, 4),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
             cpu.registers.pc = cpu.wz();
             cpu.state.cycle += 1;
         },
-        inst_state(0xC4, 5) => {
-            cpu.fetch_and_decode();
-        },
-
-        // CALL NC, imm16
-        inst_state(0xD4, 0) => {
-            cpu.z = cpu.fetch_pc();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD4, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (cpu.registers.flags.c) {
-                cpu.state.cycle += 3;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD4, 2) => {
-            cpu.registers.sp -%= 1;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD4, 3) => {
-            mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
-            cpu.registers.sp -%= 1;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD4, 4) => {
-            mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD4, 5) => {
-            cpu.fetch_and_decode();
-        },
-
-        // CALL Z, imm16
-        inst_state(0xCC, 0) => {
-            cpu.z = cpu.fetch_pc();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCC, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (!cpu.registers.flags.z) {
-                cpu.state.cycle += 3;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCC, 2) => {
-            cpu.registers.sp -%= 1;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCC, 3) => {
-            mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
-            cpu.registers.sp -%= 1;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCC, 4) => {
-            mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCC, 5) => {
-            cpu.fetch_and_decode();
-        },
-
-        // CALL C, imm16
-        inst_state(0xDC, 0) => {
-            cpu.z = cpu.fetch_pc();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDC, 1) => {
-            cpu.w = cpu.fetch_pc();
-            if (!cpu.registers.flags.c) {
-                cpu.state.cycle += 3;
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDC, 2) => {
-            cpu.registers.sp -%= 1;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDC, 3) => {
-            mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
-            cpu.registers.sp -%= 1;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDC, 4) => {
-            mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDC, 5) => {
-            cpu.fetch_and_decode();
+        inst_state(0o304, 5),
+        inst_state(0o314, 5),
+        inst_state(0o324, 5),
+        inst_state(0o334, 5),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // RET
         inst_state(0xC9, 0) => {
-            cpu.z = cpu.pop();
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
         inst_state(0xC9, 1) => {
-            cpu.w = cpu.pop();
+            cpu.z = bus.dbus;
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
         inst_state(0xC9, 2) => {
+            cpu.w = bus.dbus;
             cpu.registers.pc = cpu.wz();
             cpu.state.cycle += 1;
         },
         inst_state(0xC9, 3) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // RET NZ
-        inst_state(0xC0, 0) => {
-            if (cpu.registers.flags.z) {
+        // RET cond
+        inst_state(0o300, 0),
+        inst_state(0o310, 0),
+        inst_state(0o320, 0),
+        inst_state(0o330, 0),
+        => {
+            const cond: Cond = @enumFromInt(@as(u2, @truncate(y)));
+            if (!cpu.get_cond(cond)) {
                 cpu.state.cycle += 2;
             } else {
-                cpu.z = cpu.pop();
+                bus = mem_read(bus, cpu.registers.sp);
+                cpu.registers.sp += 1;
             }
             cpu.state.cycle += 1;
         },
-        inst_state(0xC0, 1) => {
-            cpu.w = cpu.pop();
+        inst_state(0o300, 1),
+        inst_state(0o310, 1),
+        inst_state(0o320, 1),
+        inst_state(0o330, 1),
+        => {
+            cpu.z = bus.dbus;
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC0, 2) => {
+        inst_state(0o300, 2),
+        inst_state(0o310, 2),
+        inst_state(0o320, 2),
+        inst_state(0o330, 2),
+        => {
+            cpu.w = bus.dbus;
             cpu.registers.pc = cpu.wz();
             cpu.state.cycle += 1;
         },
-        inst_state(0xC0, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RET NC
-        inst_state(0xD0, 0) => {
-            if (cpu.registers.flags.c) {
-                cpu.state.cycle += 2;
-            } else {
-                cpu.z = cpu.pop();
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD0, 1) => {
-            cpu.w = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD0, 2) => {
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD0, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RET Z
-        inst_state(0xC8, 0) => {
-            if (!cpu.registers.flags.z) {
-                cpu.state.cycle += 2;
-            } else {
-                cpu.z = cpu.pop();
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xC8, 1) => {
-            cpu.w = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xC8, 2) => {
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xC8, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RET C
-        inst_state(0xD8, 0) => {
-            if (!cpu.registers.flags.c) {
-                cpu.state.cycle += 2;
-            } else {
-                cpu.z = cpu.pop();
-            }
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD8, 1) => {
-            cpu.w = cpu.pop();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD8, 2) => {
-            cpu.registers.pc = cpu.wz();
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD8, 3) => {
-            cpu.fetch_and_decode();
+        inst_state(0o300, 3),
+        inst_state(0o310, 3),
+        inst_state(0o320, 3),
+        inst_state(0o330, 3),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // RETI
         inst_state(0xD9, 0) => {
-            cpu.z = cpu.pop();
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
         inst_state(0xD9, 1) => {
-            cpu.w = cpu.pop();
+            cpu.z = bus.dbus;
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
         inst_state(0xD9, 2) => {
+            cpu.w = bus.dbus;
             cpu.registers.pc = cpu.wz();
             cpu.ime = true;
             cpu.state.cycle += 1;
         },
         inst_state(0xD9, 3) => {
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
-        // RST 0x00
-        inst_state(0xC7, 0) => {
+        // RST
+        inst_state(0o307, 0),
+        inst_state(0o317, 0),
+        inst_state(0o327, 0),
+        inst_state(0o337, 0),
+        inst_state(0o347, 0),
+        inst_state(0o357, 0),
+        inst_state(0o367, 0),
+        inst_state(0o377, 0),
+        => {
+            cpu.registers.sp -= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC7, 1) => {
-            cpu.push(msb(cpu.registers.pc));
+        inst_state(0o307, 1),
+        inst_state(0o317, 1),
+        inst_state(0o327, 1),
+        inst_state(0o337, 1),
+        inst_state(0o347, 1),
+        inst_state(0o357, 1),
+        inst_state(0o367, 1),
+        inst_state(0o377, 1),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
+            cpu.registers.sp -= 1;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC7, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x00;
+        inst_state(0o307, 2),
+        inst_state(0o317, 2),
+        inst_state(0o327, 2),
+        inst_state(0o337, 2),
+        inst_state(0o347, 2),
+        inst_state(0o357, 2),
+        inst_state(0o367, 2),
+        inst_state(0o377, 2),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
+            cpu.registers.pc = @as(u8, y) * 8;
             cpu.state.cycle += 1;
         },
-        inst_state(0xC7, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RST 0x08
-        inst_state(0xCF, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCF, 1) => {
-            cpu.push(msb(cpu.registers.pc));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCF, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x08;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xCF, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RST 0x10
-        inst_state(0xD7, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD7, 1) => {
-            cpu.push(msb(cpu.registers.pc));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD7, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x10;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xD7, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RST 0x18
-        inst_state(0xDF, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDF, 1) => {
-            cpu.push(msb(cpu.registers.pc));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDF, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x18;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xDF, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RST 0x20
-        inst_state(0xE7, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE7, 1) => {
-            cpu.push(msb(cpu.registers.pc));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE7, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x20;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xE7, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RST 0x28
-        inst_state(0xEF, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xEF, 1) => {
-            cpu.push(msb(cpu.registers.pc));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xEF, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x28;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xEF, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RST 0x30
-        inst_state(0xF7, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF7, 1) => {
-            cpu.push(msb(cpu.registers.pc));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF7, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x30;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xF7, 3) => {
-            cpu.fetch_and_decode();
-        },
-
-        // RST 0x38
-        inst_state(0xFF, 0) => {
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xFF, 1) => {
-            cpu.push(msb(cpu.registers.pc));
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xFF, 2) => {
-            cpu.push(lsb(cpu.registers.pc));
-            cpu.registers.pc = 0x38;
-            cpu.state.cycle += 1;
-        },
-        inst_state(0xFF, 3) => {
-            cpu.fetch_and_decode();
+        inst_state(0o307, 3),
+        inst_state(0o317, 3),
+        inst_state(0o327, 3),
+        inst_state(0o337, 3),
+        inst_state(0o347, 3),
+        inst_state(0o357, 3),
+        inst_state(0o367, 3),
+        inst_state(0o377, 3),
+        => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // EI
         inst_state(0xFB, 0) => {
             cpu.should_set_ime = true;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // DI
         inst_state(0xF3, 0) => {
             cpu.ime = false;
-            cpu.fetch_and_decode();
+            bus = cpu.fetch_and_decode(bus);
         },
 
         inst_state(0xCB, 0) => {
-            cpu.fetch_and_decode_extended();
+            bus = cpu.fetch_and_decode_extended(bus);
         },
 
         else => unreachable,
@@ -1542,29 +1208,43 @@ fn decode_cb(cpu: *SM83, bus: *Pins) void {
     const op: u5 = @truncate(cpu.state.opcode >> 3);
     const reg_idx: u3 = @truncate(cpu.state.opcode);
 
+    const x: u2 = @truncate(op >> 3);
+    const y: u3 = @truncate(op);
+
     if (reg_idx == 6) {
-        switch ((cpu.state.cycle << 5) | op) {
-            0b00000...0b11111 => {
-                bus.* = mem_read(bus, cpu.registers.hl());
+        // Bit instructions are one cycle faster that other CB-instrutions, so
+        // we give them special treatment
+        if (x == 1) {
+            switch (cpu.state.cycle) {
+                0 => {
+                    bus.* = mem_read(bus.*, cpu.registers.hl());
+                    cpu.state.cycle += 1;
+                },
+                1 => {
+                    cpu.bit(bus.dbus, y);
+                    bus.* = cpu.fetch_and_decode(bus.*);
+                },
+                else => unreachable,
+            }
+        } else switch (cpu.state.cycle) {
+            0 => {
+                bus.* = mem_read(bus.*, cpu.registers.hl());
+                cpu.state.cycle += 1;
             },
-            0b100000...0b100111, 0b110000...0b111111 => {
-                const read_data = bus.dbus;
-                const result = cpu.apply_cb_op(op, read_data);
-                bus.* = mem_write(bus, cpu.registers.hl(), result);
+            1 => {
+                const result = cpu.apply_cb_op(op, bus.dbus);
+                bus.* = mem_write(bus.*, cpu.registers.hl(), result);
+                cpu.state.cycle += 1;
             },
-            0b101000...0b1011111 => {
-                const read_data = bus.dbus;
-                _ = cpu.apply_cb_op(op, read_data);
-                bus.* = cpu.fetch_and_decode(bus);
+            2 => {
+                bus.* = cpu.fetch_and_decode(bus.*);
             },
-            0b1000000...0b1011111 => {
-                bus.* = cpu.fetch_and_decode(bus);
-            },
+            else => unreachable,
         }
     } else {
         const reg = cpu.reg_decode(reg_idx);
         reg.* = cpu.apply_cb_op(op, reg.*);
-        bus.* = cpu.fetch_and_decode(bus);
+        bus.* = cpu.fetch_and_decode(bus.*);
     }
 }
 
@@ -1579,24 +1259,53 @@ fn apply_cb_op(cpu: *SM83, op: u5, reg: u8) u8 {
         6 => cpu.swap(reg),
         7 => cpu.srl(reg),
         8...15 => blk: {
-            cpu.bit(reg, op - 8);
+            cpu.bit(reg, @truncate(op - 8));
             break :blk reg;
         },
-        16...23 => cpu.res(reg, op - 16),
-        24...31 => cpu.set(reg, op - 24),
+        16...23 => cpu.res(reg, @truncate(op - 16)),
+        24...31 => cpu.set(reg, @truncate(op - 24)),
     };
 }
 
 fn reg_decode(cpu: *SM83, reg_idx: u3) *u8 {
     return switch (reg_idx) {
-        0b000 => *cpu.registers.b,
-        0b001 => *cpu.registers.c,
-        0b010 => *cpu.registers.d,
-        0b011 => *cpu.registers.e,
-        0b100 => *cpu.registers.h,
-        0b101 => *cpu.registers.l,
+        0b000 => &cpu.registers.b,
+        0b001 => &cpu.registers.c,
+        0b010 => &cpu.registers.d,
+        0b011 => &cpu.registers.e,
+        0b100 => &cpu.registers.h,
+        0b101 => &cpu.registers.l,
         0b110 => unreachable,
-        0b111 => *cpu.registers.a,
+        0b111 => &cpu.registers.a,
+    };
+}
+
+fn reg_decode2(cpu: SM83, reg_idx: u2) u16 {
+    return switch (reg_idx) {
+        0b00 => cpu.registers.bc(),
+        0b01 => cpu.registers.de(),
+        0b10 => cpu.registers.hl(),
+        0b11 => cpu.registers.af(),
+    };
+}
+
+fn set_reg_decode2(cpu: *SM83, reg_idx: u2, data: u16) void {
+    switch (reg_idx) {
+        0b00 => cpu.registers.setbc(data),
+        0b01 => cpu.registers.setde(data),
+        0b10 => cpu.registers.sethl(data),
+        0b11 => cpu.registers.setaf(data),
+    }
+}
+
+const Cond = enum { NZ, Z, NC, C };
+
+fn get_cond(cpu: SM83, cond_idx: Cond) bool {
+    return switch (cond_idx) {
+        .NZ => !cpu.registers.flags.z,
+        .Z => cpu.registers.flags.z,
+        .NC => !cpu.registers.flags.c,
+        .C => cpu.registers.flags.c,
     };
 }
 
@@ -1658,9 +1367,10 @@ fn mem_write(bus: Pins, addr: u16, data: u8) Pins {
 }
 
 /// Fetches the next instruction opcode and resets the cycle counter.
-fn fetch_and_decode(cpu: *const SM83, bus: Pins) Pins {
+fn fetch_and_decode(cpu: *SM83, bus: Pins) Pins {
     defer cpu.registers.pc += 1;
     cpu.state.cycle = 0;
+    cpu.state.is_cb_inst = false;
     return bus.set(.{
         .abus = cpu.registers.pc,
         .mreq = 1,
@@ -1669,8 +1379,9 @@ fn fetch_and_decode(cpu: *const SM83, bus: Pins) Pins {
     });
 }
 
-fn fetch_and_decode_extended(cpu: *SM83) void {
-    cpu.state = .{ .opcode = cpu.fetch_pc(), .cycle = 0, .is_cb_inst = true };
+fn fetch_and_decode_extended(cpu: *SM83, bus: Pins) Pins {
+    defer cpu.state.is_cb_inst = true;
+    return cpu.fetch_and_decode(bus);
 }
 
 fn fetch_pc(cpu: *SM83, bus: Pins) Pins {
@@ -1786,7 +1497,7 @@ fn dec(cpu: *SM83, reg: *u8) void {
 }
 
 fn rlc(cpu: *SM83, reg: u8) u8 {
-    var result, const carry = @shlWithOverflow(reg.*, 1);
+    var result, const carry = @shlWithOverflow(reg, 1);
     result |= carry;
     cpu.registers.flags = .{
         .z = result == 0,
@@ -1824,9 +1535,9 @@ fn rl(cpu: *SM83, reg: u8) u8 {
 fn rr(cpu: *SM83, reg: u8) u8 {
     const carry: u8 = reg & 1;
     const old_carry: u8 = @intFromBool(cpu.registers.flags.c);
-    const result = (reg.* >> 1) | (old_carry << 7);
+    const result = (reg >> 1) | (old_carry << 7);
     cpu.registers.flags = .{
-        .z = reg.* == 0,
+        .z = result == 0,
         .n = false,
         .h = false,
         .c = carry == 1,
@@ -1897,53 +1608,38 @@ fn srl(cpu: *SM83, r: u8) u8 {
     return result;
 }
 
-const RegPairs = enum {
-    bc,
-    de,
-    hl,
-    sp,
-};
-
-fn inc16(cpu: *SM83, comptime reg_pair: RegPairs) void {
-    switch (reg_pair) {
-        .bc => {
+fn inc16(cpu: *SM83, reg_pair_idx: u2) void {
+    switch (reg_pair_idx) {
+        0 => {
             cpu.registers.setbc(cpu.registers.bc() +% 1);
         },
-        .de => {
+        1 => {
             cpu.registers.setde(cpu.registers.de() +% 1);
         },
-        .hl => {
+        2 => {
             cpu.registers.sethl(cpu.registers.hl() +% 1);
         },
-        .sp => {
+        3 => {
             cpu.registers.sp +%= 1;
         },
     }
 }
 
-fn dec16(cpu: *SM83, comptime reg_pair: RegPairs) void {
-    switch (reg_pair) {
-        .bc => {
-            cpu.registers.setbc(cpu.registers.bc() -% 1);
-        },
-        .de => {
-            cpu.registers.setde(cpu.registers.de() -% 1);
-        },
-        .hl => {
-            cpu.registers.sethl(cpu.registers.hl() -% 1);
-        },
-        .sp => {
-            cpu.registers.sp -%= 1;
-        },
+fn dec16(cpu: *SM83, reg_pair_idx: u2) void {
+    switch (reg_pair_idx) {
+        0 => cpu.registers.setbc(cpu.registers.bc() -% 1),
+        1 => cpu.registers.setde(cpu.registers.de() -% 1),
+        2 => cpu.registers.sethl(cpu.registers.hl() -% 1),
+        3 => cpu.registers.sp -%= 1,
     }
 }
 
-fn add_pair_to_hl(cpu: *SM83, comptime reg_pair: RegPairs) void {
-    const reg = switch (reg_pair) {
-        .bc => cpu.registers.bc(),
-        .de => cpu.registers.de(),
-        .hl => cpu.registers.hl(),
-        .sp => cpu.registers.sp,
+fn add_pair_to_hl(cpu: *SM83, reg_pair_idx: u2) void {
+    const reg = switch (reg_pair_idx) {
+        0 => cpu.registers.bc(),
+        1 => cpu.registers.de(),
+        2 => cpu.registers.hl(),
+        3 => cpu.registers.sp,
     };
     const hl = cpu.registers.hl();
     const result, const carry = @addWithOverflow(reg, hl);

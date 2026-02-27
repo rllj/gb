@@ -11,7 +11,7 @@ registers: Registers,
 z: u8 = 0,
 w: u8 = 0,
 ime: bool = false,
-// Since the gameboy delays the IE instruction by a cycle for some reason.
+// Since the gameboy delays the EI instruction by a cycle for some reason.
 should_set_ime: bool = false,
 
 const Bus = u64;
@@ -37,8 +37,8 @@ const Pins = packed struct(u64) {
     shadow_access: u1 = 0,
     shadow_override: u1 = 0,
     mreq: u1 = 0,
-    int: u8 = 0,
-    inta: u8 = 0,
+    int: IRMask = 0,
+    inta: IRMask = 0,
     prefix_cb: u1 = 0,
     dbus: u8 = 0,
     abus: u16 = 0,
@@ -50,6 +50,15 @@ const Pins = packed struct(u64) {
         }
         return result;
     }
+};
+
+const IRMask = packed struct(u8) {
+    unused: u3 = 0,
+    vblank: u1 = 0,
+    status: u1 = 0,
+    timer: u1 = 0,
+    serial: u1 = 0,
+    joypad: u1 = 0,
 };
 
 const Registers = packed struct {
@@ -170,6 +179,8 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         // STOP
         inst_state(0x10, 0) => {
             //TODO
+            // Is apparently not used in any licensed ROMs, low priority to implement.
+            unreachable;
         },
 
         // zig fmt: off
@@ -255,7 +266,9 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
         // HALT
         inst_state(0o166, 0) => {
-            //TODO
+            bus.set(.{
+                .halt = 1,
+            });
         },
 
         // LD (BC), A
@@ -741,8 +754,26 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
         // DAA
         inst_state(0x27, 0) => {
-            // TODO
-            unreachable;
+            var offset: u8 = 0;
+
+            const subtract = cpu.registers.flags.n;
+
+            if ((!subtract and cpu.registers.a & 0xF > 0x09) or cpu.registers.flags.h) {
+                offset += 0x06;
+            }
+            if ((!subtract and cpu.registers.a > 0x99) or cpu.registers.flags.c) {
+                offset += 0x60;
+            }
+
+            if (subtract) {
+                cpu.registers.a -%= offset;
+            } else {
+                cpu.registers.a +%= offset;
+                cpu.registers.flags.c = true;
+            }
+
+            cpu.registers.flags.z = cpu.registers.a == 0;
+            cpu.registers.flags.h = false;
         },
 
         // CPL

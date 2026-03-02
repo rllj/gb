@@ -6,18 +6,16 @@ const assert = @import("std").debug.assert;
 
 const SM83 = @This();
 
-state: State,
-registers: Registers,
+state: State = .{ .opcode = 0x00, .cycle = 0, .is_cb_inst = false },
+registers: Registers = .{},
 z: u8 = 0,
 w: u8 = 0,
 ime: bool = false,
 // Since the gameboy delays the EI instruction by a cycle for some reason.
 should_set_ime: bool = false,
 
-const Bus = u64;
-
 /// https://iceboy.a-singer.de/doc/dmg_cpu_connections.html
-const Pins = packed struct(u64) {
+pub const Pins = packed struct(u64) {
     m1: u1 = 0,
     exec_phase: u2 = 0,
     data_phase: u2 = 0,
@@ -37,8 +35,8 @@ const Pins = packed struct(u64) {
     shadow_access: u1 = 0,
     shadow_override: u1 = 0,
     mreq: u1 = 0,
-    int: IRMask = 0,
-    inta: IRMask = 0,
+    int: IRMask = .{},
+    inta: IRMask = .{},
     prefix_cb: u1 = 0,
     dbus: u8 = 0,
     abus: u16 = 0,
@@ -70,7 +68,7 @@ const Registers = packed struct {
         z: bool,
     };
 
-    ir: u8,
+    ir: u8 = 0x00,
 
     a: u8 = 0x01,
     flags: Flags = @bitCast(@as(u8, 0xB0)),
@@ -125,6 +123,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
     if (cpu.state.cycle == 0) {
         cpu.state.opcode = bus.dbus;
+        cpu.registers.pc += 1;
     }
 
     bus = bus.set(.{
@@ -266,7 +265,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
         // HALT
         inst_state(0o166, 0) => {
-            bus.set(.{
+            bus = bus.set(.{
                 .halt = 1,
             });
         },
@@ -1300,14 +1299,14 @@ fn apply_cb_op(cpu: *SM83, op: u5, reg: u8) u8 {
 
 fn reg_decode(cpu: *SM83, reg_idx: u3) *u8 {
     return switch (reg_idx) {
-        0b000 => &cpu.registers.b,
-        0b001 => &cpu.registers.c,
-        0b010 => &cpu.registers.d,
-        0b011 => &cpu.registers.e,
-        0b100 => &cpu.registers.h,
-        0b101 => &cpu.registers.l,
+        0b000 => @ptrCast(@alignCast(&cpu.registers.b)),
+        0b001 => @ptrCast(@alignCast(&cpu.registers.c)),
+        0b010 => @ptrCast(@alignCast(&cpu.registers.d)),
+        0b011 => @ptrCast(@alignCast(&cpu.registers.e)),
+        0b100 => @ptrCast(@alignCast(&cpu.registers.h)),
+        0b101 => @ptrCast(@alignCast(&cpu.registers.l)),
         0b110 => unreachable,
-        0b111 => &cpu.registers.a,
+        0b111 => @ptrCast(@alignCast(&cpu.registers.a)),
     };
 }
 
@@ -1399,7 +1398,6 @@ fn mem_write(bus: Pins, addr: u16, data: u8) Pins {
 
 /// Fetches the next instruction opcode and resets the cycle counter.
 fn fetch_and_decode(cpu: *SM83, bus: Pins) Pins {
-    defer cpu.registers.pc += 1;
     cpu.state.cycle = 0;
     cpu.state.is_cb_inst = false;
     return bus.set(.{
@@ -1690,8 +1688,4 @@ fn msb(data: u16) u8 {
 }
 fn lsb(data: u16) u8 {
     return @truncate(data);
-}
-
-test {
-    @import("std").testing.refAllDeclsRecursive(SM83);
 }

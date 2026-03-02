@@ -11,7 +11,7 @@ const Header = extern struct {
     old_licensee: u8,
     rom_version: u8,
     header_checksum: u8,
-    global_checksum: [2]u8,
+    global_checksum: u16,
 
     const Destination = enum(u8) {
         japan = 0,

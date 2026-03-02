@@ -5,3 +5,6 @@ zig-out/
 /build/
 /build-*/
 .direnv/
+logfile
+gameboy-doctor
+src/roms/

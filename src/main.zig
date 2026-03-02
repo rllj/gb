@@ -1,6 +1,14 @@
 const std = @import("std");
-const SM83 = @import("SM83.zig");
+const allocator = std.heap.page_allocator;
 
-pub fn main() void {
-    std.testing.refAllDeclsRecursive(SM83);
+const CPU = @import("CPU.zig");
+
+pub fn main() !void {
+    const cartridge = @embedFile("roms/06-ld r,r.gb");
+
+    var gb: CPU = try .init(allocator, cartridge);
+    defer gb.deinit(allocator);
+    while (true) {
+        gb.tick();
+    }
 }

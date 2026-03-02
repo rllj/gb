@@ -13,5 +13,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const check = b.step("check", "Check step for ZLS");
+    check.dependOn(&exe.step);
+
     b.installArtifact(exe);
 }

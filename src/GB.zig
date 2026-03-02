@@ -5,21 +5,20 @@ const assert = std.debug.assert;
 const SM83 = @import("SM83.zig");
 const Pins = SM83.Pins;
 
-// const Memory = @import("Memory.zig");
 const logger = @import("std").log.scoped(.cpu);
 
 // TODO boot rom
 
 // const PPU = @import("PPU.zig");
 // const Timer = @import("Timer.zig");
-const CPU = @This();
+const GB = @This();
 sm83: SM83,
 memory: []u8,
 bus: Pins,
 
 cycle: usize = 0,
 
-pub fn init(allocator: Allocator, cartridge: []const u8) !CPU {
+pub fn init(allocator: Allocator, cartridge: []const u8) !GB {
     const memory: []u8 = try allocator.alloc(u8, 0x10000);
     @memset(memory, 0x0);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
@@ -30,12 +29,15 @@ pub fn init(allocator: Allocator, cartridge: []const u8) !CPU {
     };
 }
 
-pub fn deinit(self: *CPU, allocator: Allocator) void {
+pub fn deinit(self: *GB, allocator: Allocator) void {
     allocator.free(self.memory);
 }
 
+// TODO this function has a tonne of debugging stuff in it. When the
+// architecture is a bit more clear, I'll clean this up and wrap it in a
+// debugging harness at call-site instead.
 /// To be called at 4.194304 MHz.
-pub fn tick(self: *CPU) void {
+pub fn tick(self: *GB) void {
     if (self.cycle == 0) {
         self.debug_log();
     }
@@ -51,7 +53,7 @@ pub fn tick(self: *CPU) void {
     self.cycle += 1;
 }
 
-pub fn handle_cpu_bus(self: *CPU, bus: Pins) Pins {
+pub fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
     if (bus.mreq == 1 and bus.wr == 1) {
         switch (bus.abus) {
             0x0000...0x7FFF => @panic("Attempt to write to ROM"),
@@ -85,57 +87,57 @@ pub fn handle_cpu_bus(self: *CPU, bus: Pins) Pins {
     return bus;
 }
 
-pub fn write_vram(self: *CPU, addr: u16, data: u8) void {
+pub fn write_vram(self: *GB, addr: u16, data: u8) void {
     _ = self;
     _ = addr;
     _ = data;
 }
 
-pub fn write_ram(self: *CPU, addr: u16, data: u8) void {
+pub fn write_ram(self: *GB, addr: u16, data: u8) void {
     // std.debug.print("Wrote to ram: data: 0x{X:0>2}, addr: 0x{X:0>4}\n", .{ data, addr });
     self.memory[addr] = data;
 }
 
-pub fn write_oam(self: *CPU, addr: u16, data: u8) void {
+pub fn write_oam(self: *GB, addr: u16, data: u8) void {
     _ = self;
     _ = addr;
     _ = data;
 }
 
-pub fn write_io(self: *CPU, addr: u16, data: u8) void {
+pub fn write_io(self: *GB, addr: u16, data: u8) void {
     self.write_ram(addr, data);
 }
 
-pub fn write_ie(self: *CPU, data: u8) void {
+pub fn write_ie(self: *GB, data: u8) void {
     self.memory[0xFFFF] = data;
 }
 
-pub fn read_vram(self: *CPU, bus: Pins) Pins {
+pub fn read_vram(self: *GB, bus: Pins) Pins {
     _ = self;
     return bus;
 }
 
-pub fn read_ram(self: *CPU, bus: Pins) Pins {
+pub fn read_ram(self: *GB, bus: Pins) Pins {
     return bus.set(.{ .dbus = self.memory[bus.abus] });
 }
 
-pub fn read_oam(self: *CPU, bus: Pins) Pins {
+pub fn read_oam(self: *GB, bus: Pins) Pins {
     _ = self;
     return bus;
 }
 
-pub fn read_io(self: *CPU, bus: Pins) Pins {
+pub fn read_io(self: *GB, bus: Pins) Pins {
     return switch (bus.abus) {
         0xFF44 => bus.set(.{ .dbus = 0x90 }),
         else => self.read_ram(bus),
     };
 }
 
-pub fn read_ie(self: *CPU, bus: Pins) Pins {
+pub fn read_ie(self: *GB, bus: Pins) Pins {
     return bus.set(.{ .dbus = self.memory[0xFFFF] });
 }
 
-fn debug_log(self: *const CPU) void {
+fn debug_log(self: *const GB) void {
     const pc = self.sm83.registers.pc;
     std.debug.print(
         "A:{X:0>2} F:{X:0>2} B:{X:0>2} C:{X:0>2} D:{X:0>2} E:{X:0>2} H:{X:0>2} L:{X:0>2} SP:{X:0>4} PC:{X:0>4} PCMEM:{X:0>2},{X:0>2},{X:0>2},{X:0>2}\n",

@@ -3,10 +3,11 @@
 //! https://github.com/Gekkio/gb-research/tree/main/sm83-cpu-core
 
 const assert = @import("std").debug.assert;
+const print = @import("std").debug.print;
 
 const SM83 = @This();
 
-state: State = .{ .opcode = 0x00, .cycle = 0, .is_cb_inst = false },
+state: State = .{ .opcode = 0x00, .cycle = 0 },
 registers: Registers = .{},
 z: u8 = 0,
 w: u8 = 0,
@@ -113,7 +114,7 @@ const Registers = packed struct {
     }
 };
 
-const State = struct { opcode: u8, cycle: u8, is_cb_inst: bool };
+const State = struct { opcode: u8, cycle: u8 };
 
 const IF = 0xFF0F;
 const IE = 0xFFFF;
@@ -143,7 +144,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
     _ = x;
     const y: u3 = @truncate(cpu.state.opcode >> 3);
     const z: u3 = @truncate(cpu.state.opcode);
-    if (cpu.state.is_cb_inst) {
+    if (bus.prefix_cb == 1) {
         cpu.decode_cb(&bus);
     } else switch (@as(u11, cpu.state.cycle) << 8 | cpu.state.opcode) {
         // NOP
@@ -192,8 +193,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o150, 0)...inst_state(0o155, 0), inst_state(0o157, 0),
         inst_state(0o170, 0)...inst_state(0o175, 0), inst_state(0o177, 0),
         => {
-            assert(cpu.state.cycle == 0);
-            cpu.reg_decode(y).* = cpu.reg_decode(z).*;
+            cpu.reg_decode_set(y, cpu.reg_decode_get(z));
             bus = cpu.fetch_and_decode(bus);
         },
 
@@ -209,15 +209,14 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o126, 1), inst_state(0o136, 1),
         inst_state(0o146, 1), inst_state(0o156, 1),
         inst_state(0o176, 1) => {
-            const reg = cpu.reg_decode(y);
-            reg.* = bus.dbus;
+            cpu.reg_decode_set(y, bus.dbus);
             bus = cpu.fetch_and_decode(bus);
         },
         // zig fmt: on
 
         // LD (HL), r
         inst_state(0o160, 0)...inst_state(0o165, 0), inst_state(0o167, 0) => {
-            const reg = cpu.reg_decode(z).*;
+            const reg = cpu.reg_decode_get(z);
             bus = mem_write(bus, cpu.registers.hl(), reg);
             cpu.state.cycle += 1;
         },
@@ -245,8 +244,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o56, 1),
         inst_state(0o76, 1),
         => {
-            const reg = cpu.reg_decode(y);
-            reg.* = bus.dbus;
+            cpu.reg_decode_set(y, bus.dbus);
             bus = cpu.fetch_and_decode(bus);
         },
 
@@ -353,7 +351,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
 
         // zig fmt: off
-        // Add A, r
+        // ALU A, r
         inst_state(0o200, 0)...inst_state(0o205, 0), inst_state(0o207, 0),
         inst_state(0o210, 0)...inst_state(0o215, 0), inst_state(0o217, 0),
         inst_state(0o220, 0)...inst_state(0o225, 0), inst_state(0o227, 0),
@@ -363,12 +361,12 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o260, 0)...inst_state(0o265, 0), inst_state(0o267, 0),
         inst_state(0o270, 0)...inst_state(0o275, 0), inst_state(0o277, 0),
         => {
-            const reg = cpu.reg_decode(z).*;
+            const reg = cpu.reg_decode_get(z);
             cpu.alu_decode(y, reg);
             bus = cpu.fetch_and_decode(bus);
         },
         // zig fmt: on
-        // Add r, (HL)
+        // ALU r, (HL)
         inst_state(0o206, 0),
         inst_state(0o216, 0),
         inst_state(0o226, 0),
@@ -689,7 +687,9 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o54, 0),
         inst_state(0o74, 0),
         => {
-            cpu.inc(cpu.reg_decode(y));
+            var reg = cpu.reg_decode_get(y);
+            cpu.inc(&reg);
+            cpu.reg_decode_set(y, reg);
             bus = cpu.fetch_and_decode(bus);
         },
 
@@ -702,7 +702,9 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o55, 0),
         inst_state(0o75, 0),
         => {
-            cpu.dec(cpu.reg_decode(y));
+            var reg = cpu.reg_decode_get(y);
+            cpu.dec(&reg);
+            cpu.reg_decode_set(y, reg);
             bus = cpu.fetch_and_decode(bus);
         },
 
@@ -946,7 +948,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.state.cycle += 1;
         },
         inst_state(0o30, 1) => {
-            cpu.registers.pc = add_signed(cpu.registers.pc, cpu.z);
+            cpu.registers.pc = add_signed(cpu.registers.pc, bus.dbus);
             cpu.state.cycle += 1;
         },
         inst_state(0o30, 2) => {
@@ -1242,38 +1244,39 @@ fn decode_cb(cpu: *SM83, bus: *Pins) void {
     const y: u3 = @truncate(op);
 
     if (reg_idx == 6) {
-        // Bit instructions are one cycle faster that other CB-instrutions, so
+        // Bit instructions are one cycle faster than other CB-instrutions, so
         // we give them special treatment
         if (x == 1) {
             switch (cpu.state.cycle) {
-                0 => {
+                1 => {
                     bus.* = mem_read(bus.*, cpu.registers.hl());
                     cpu.state.cycle += 1;
                 },
-                1 => {
+                2 => {
                     cpu.bit(bus.dbus, y);
                     bus.* = cpu.fetch_and_decode(bus.*);
                 },
                 else => unreachable,
             }
         } else switch (cpu.state.cycle) {
-            0 => {
+            1 => {
                 bus.* = mem_read(bus.*, cpu.registers.hl());
                 cpu.state.cycle += 1;
             },
-            1 => {
+            2 => {
                 const result = cpu.apply_cb_op(op, bus.dbus);
                 bus.* = mem_write(bus.*, cpu.registers.hl(), result);
                 cpu.state.cycle += 1;
             },
-            2 => {
+            3 => {
                 bus.* = cpu.fetch_and_decode(bus.*);
             },
             else => unreachable,
         }
     } else {
-        const reg = cpu.reg_decode(reg_idx);
-        reg.* = cpu.apply_cb_op(op, reg.*);
+        const reg = cpu.reg_decode_get(reg_idx);
+        const updated_reg = cpu.apply_cb_op(op, reg);
+        cpu.reg_decode_set(reg_idx, updated_reg);
         bus.* = cpu.fetch_and_decode(bus.*);
     }
 }
@@ -1297,17 +1300,30 @@ fn apply_cb_op(cpu: *SM83, op: u5, reg: u8) u8 {
     };
 }
 
-fn reg_decode(cpu: *SM83, reg_idx: u3) *u8 {
+fn reg_decode_get(cpu: *SM83, reg_idx: u3) u8 {
     return switch (reg_idx) {
-        0b000 => @ptrCast(@alignCast(&cpu.registers.b)),
-        0b001 => @ptrCast(@alignCast(&cpu.registers.c)),
-        0b010 => @ptrCast(@alignCast(&cpu.registers.d)),
-        0b011 => @ptrCast(@alignCast(&cpu.registers.e)),
-        0b100 => @ptrCast(@alignCast(&cpu.registers.h)),
-        0b101 => @ptrCast(@alignCast(&cpu.registers.l)),
+        0b000 => cpu.registers.b,
+        0b001 => cpu.registers.c,
+        0b010 => cpu.registers.d,
+        0b011 => cpu.registers.e,
+        0b100 => cpu.registers.h,
+        0b101 => cpu.registers.l,
         0b110 => unreachable,
-        0b111 => @ptrCast(@alignCast(&cpu.registers.a)),
+        0b111 => cpu.registers.a,
     };
+}
+
+fn reg_decode_set(cpu: *SM83, reg_idx: u3, data: u8) void {
+    switch (reg_idx) {
+        0b000 => cpu.registers.b = data,
+        0b001 => cpu.registers.c = data,
+        0b010 => cpu.registers.d = data,
+        0b011 => cpu.registers.e = data,
+        0b100 => cpu.registers.h = data,
+        0b101 => cpu.registers.l = data,
+        0b110 => unreachable,
+        0b111 => cpu.registers.a = data,
+    }
 }
 
 fn reg_decode2(cpu: SM83, reg_idx: u2) u16 {
@@ -1346,8 +1362,8 @@ fn alu_decode(cpu: *SM83, alu_op: u3, reg: u8) void {
         2 => cpu.sub(reg),
         3 => cpu.sbc(reg),
         4 => cpu.@"and"(reg),
-        5 => cpu.@"or"(reg),
-        6 => cpu.xor(reg),
+        5 => cpu.xor(reg),
+        6 => cpu.@"or"(reg),
         7 => cpu.cp(reg),
     }
 }
@@ -1399,18 +1415,24 @@ fn mem_write(bus: Pins, addr: u16, data: u8) Pins {
 /// Fetches the next instruction opcode and resets the cycle counter.
 fn fetch_and_decode(cpu: *SM83, bus: Pins) Pins {
     cpu.state.cycle = 0;
-    cpu.state.is_cb_inst = false;
     return bus.set(.{
         .abus = cpu.registers.pc,
         .mreq = 1,
         .rd = 1,
         .m1 = 1,
+        .prefix_cb = 0,
     });
 }
 
 fn fetch_and_decode_extended(cpu: *SM83, bus: Pins) Pins {
-    defer cpu.state.is_cb_inst = true;
-    return cpu.fetch_and_decode(bus);
+    cpu.state.cycle = 0;
+    return bus.set(.{
+        .abus = cpu.registers.pc,
+        .mreq = 1,
+        .rd = 1,
+        .m1 = 1,
+        .prefix_cb = 1,
+    });
 }
 
 fn fetch_pc(cpu: *SM83, bus: Pins) Pins {

@@ -20,7 +20,7 @@ bus: Pins,
 cycle: usize = 0,
 
 pub fn init(allocator: Allocator, cartridge: []const u8) !CPU {
-    const memory: []u8 = try allocator.alloc(u8, 0xFFFF);
+    const memory: []u8 = try allocator.alloc(u8, 0x10000);
     @memset(memory, 0x0);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
     return .{
@@ -43,7 +43,7 @@ pub fn tick(self: *CPU) void {
     if (self.cycle % 4 == 0) {
         const bus = self.sm83.tick(self.bus);
         self.bus = self.handle_cpu_bus(bus);
-        if (self.bus.m1 == 1) {
+        if (self.bus.m1 == 1 and self.bus.prefix_cb == 0) {
             self.debug_log();
         }
     }
@@ -92,6 +92,7 @@ pub fn write_vram(self: *CPU, addr: u16, data: u8) void {
 }
 
 pub fn write_ram(self: *CPU, addr: u16, data: u8) void {
+    // std.debug.print("Wrote to ram: data: 0x{X:0>2}, addr: 0x{X:0>4}\n", .{ data, addr });
     self.memory[addr] = data;
 }
 
@@ -136,7 +137,7 @@ pub fn read_ie(self: *CPU, bus: Pins) Pins {
 
 fn debug_log(self: *const CPU) void {
     const pc = self.sm83.registers.pc;
-    @import("std").debug.print(
+    std.debug.print(
         "A:{X:0>2} F:{X:0>2} B:{X:0>2} C:{X:0>2} D:{X:0>2} E:{X:0>2} H:{X:0>2} L:{X:0>2} SP:{X:0>4} PC:{X:0>4} PCMEM:{X:0>2},{X:0>2},{X:0>2},{X:0>2}\n",
         .{
             self.sm83.registers.a,

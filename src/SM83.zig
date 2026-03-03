@@ -13,8 +13,9 @@ z: u8 = 0,
 w: u8 = 0,
 ime: bool = false,
 // Since the gameboy delays the EI instruction by a cycle for some reason.
-should_set_ime: bool = false,
+ie_counter: u2 = 0,
 
+// TODO Eventually remove some the fields here, after figuring out which are actually needed.
 /// https://iceboy.a-singer.de/doc/dmg_cpu_connections.html
 pub const Pins = packed struct(u64) {
     m1: u1 = 0,
@@ -124,7 +125,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
     if (cpu.state.cycle == 0) {
         cpu.state.opcode = bus.dbus;
-        cpu.registers.pc += 1;
+        cpu.registers.pc +%= 1;
     }
 
     bus = bus.set(.{
@@ -135,9 +136,11 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         .abus = 0,
     });
 
-    if (cpu.should_set_ime) {
-        cpu.ime = true;
-        cpu.should_set_ime = false;
+    if (cpu.ie_counter > 0) {
+        cpu.ie_counter -= 1;
+        if (cpu.ie_counter == 0) {
+            cpu.ime = true;
+        }
     }
 
     const x: u2 = @truncate(cpu.state.opcode >> 6);
@@ -764,17 +767,19 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             }
             if ((!subtract and cpu.registers.a > 0x99) or cpu.registers.flags.c) {
                 offset += 0x60;
+                cpu.registers.flags.c = true;
             }
 
             if (subtract) {
                 cpu.registers.a -%= offset;
             } else {
                 cpu.registers.a +%= offset;
-                cpu.registers.flags.c = true;
             }
 
             cpu.registers.flags.z = cpu.registers.a == 0;
             cpu.registers.flags.h = false;
+
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // CPL
@@ -1216,7 +1221,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
         // EI
         inst_state(0xFB, 0) => {
-            cpu.should_set_ime = true;
+            cpu.ie_counter = 2;
             bus = cpu.fetch_and_decode(bus);
         },
 
@@ -1248,27 +1253,27 @@ fn decode_cb(cpu: *SM83, bus: *Pins) void {
         // we give them special treatment
         if (x == 1) {
             switch (cpu.state.cycle) {
-                1 => {
+                0 => {
                     bus.* = mem_read(bus.*, cpu.registers.hl());
                     cpu.state.cycle += 1;
                 },
-                2 => {
+                1 => {
                     cpu.bit(bus.dbus, y);
                     bus.* = cpu.fetch_and_decode(bus.*);
                 },
                 else => unreachable,
             }
         } else switch (cpu.state.cycle) {
-            1 => {
+            0 => {
                 bus.* = mem_read(bus.*, cpu.registers.hl());
                 cpu.state.cycle += 1;
             },
-            2 => {
+            1 => {
                 const result = cpu.apply_cb_op(op, bus.dbus);
                 bus.* = mem_write(bus.*, cpu.registers.hl(), result);
                 cpu.state.cycle += 1;
             },
-            3 => {
+            2 => {
                 bus.* = cpu.fetch_and_decode(bus.*);
             },
             else => unreachable,

@@ -5,27 +5,36 @@ const assert = std.debug.assert;
 const SM83 = @import("SM83.zig");
 const Pins = SM83.Pins;
 
-const logger = @import("std").log.scoped(.cpu);
+const logger = @import("std").log.scoped(.gameboy);
+
+// TODO find a nicer home for these
+const IY = 0xFF44;
+const SERIAL_TRANSFER = 0xFF01;
+const SERIAL_CONTROL = 0xFF02;
 
 // TODO boot rom
-
 // const PPU = @import("PPU.zig");
 // const Timer = @import("Timer.zig");
 const GB = @This();
 sm83: SM83,
 memory: []u8,
 bus: Pins,
-
 cycle: usize = 0,
 
-pub fn init(allocator: Allocator, cartridge: []const u8) !GB {
+io: std.Io,
+serial_input: std.ArrayList(u8),
+
+pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
     const memory: []u8 = try allocator.alloc(u8, 0x10000);
     @memset(memory, 0x0);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
+    const serial_input: std.ArrayList(u8) = try .initCapacity(allocator, 4096);
     return .{
         .sm83 = .{},
         .memory = memory,
         .bus = .{ .abus = 0x100, .dbus = memory[0x100] },
+        .io = io,
+        .serial_input = serial_input,
     };
 }
 
@@ -33,20 +42,25 @@ pub fn deinit(self: *GB, allocator: Allocator) void {
     allocator.free(self.memory);
 }
 
-// TODO this function has a tonne of debugging stuff in it. When the
-// architecture is a bit more clear, I'll clean this up and wrap it in a
-// debugging harness at call-site instead.
 /// To be called at 4.194304 MHz.
-pub fn tick(self: *GB) void {
+pub fn tick(self: *GB) !void {
+    if (self.cycle % 4 == 0) {
+        const bus = self.sm83.tick(self.bus);
+        self.bus = self.handle_cpu_bus(bus);
+    }
+    self.cycle += 1;
+}
+
+pub fn tick_debug(self: *GB, writer: *std.Io.Writer) !void {
     if (self.cycle == 0) {
-        self.debug_log();
+        try self.debug_log(writer);
     }
 
     if (self.cycle % 4 == 0) {
         const bus = self.sm83.tick(self.bus);
         self.bus = self.handle_cpu_bus(bus);
         if (self.bus.m1 == 1 and self.bus.prefix_cb == 0) {
-            self.debug_log();
+            try self.debug_log(writer);
         }
     }
 
@@ -94,7 +108,6 @@ pub fn write_vram(self: *GB, addr: u16, data: u8) void {
 }
 
 pub fn write_ram(self: *GB, addr: u16, data: u8) void {
-    // std.debug.print("Wrote to ram: data: 0x{X:0>2}, addr: 0x{X:0>4}\n", .{ data, addr });
     self.memory[addr] = data;
 }
 
@@ -105,6 +118,14 @@ pub fn write_oam(self: *GB, addr: u16, data: u8) void {
 }
 
 pub fn write_io(self: *GB, addr: u16, data: u8) void {
+    if (addr == SERIAL_TRANSFER) {
+        std.debug.print("{c}", .{data});
+        self.serial_input.appendBounded(data) catch {
+            self.serial_input.clearRetainingCapacity();
+            self.serial_input.appendAssumeCapacity(data);
+            logger.warn("Ran out of serial storage, overwriting old data.", .{});
+        }; // Stupid, but works for now
+    }
     self.write_ram(addr, data);
 }
 
@@ -128,7 +149,7 @@ pub fn read_oam(self: *GB, bus: Pins) Pins {
 
 pub fn read_io(self: *GB, bus: Pins) Pins {
     return switch (bus.abus) {
-        0xFF44 => bus.set(.{ .dbus = 0x90 }),
+        IY => bus.set(.{ .dbus = 0x90 }),
         else => self.read_ram(bus),
     };
 }
@@ -137,9 +158,9 @@ pub fn read_ie(self: *GB, bus: Pins) Pins {
     return bus.set(.{ .dbus = self.memory[0xFFFF] });
 }
 
-fn debug_log(self: *const GB) void {
+fn debug_log(self: *const GB, writer: *std.Io.Writer) !void {
     const pc = self.sm83.registers.pc;
-    std.debug.print(
+    try writer.print(
         "A:{X:0>2} F:{X:0>2} B:{X:0>2} C:{X:0>2} D:{X:0>2} E:{X:0>2} H:{X:0>2} L:{X:0>2} SP:{X:0>4} PC:{X:0>4} PCMEM:{X:0>2},{X:0>2},{X:0>2},{X:0>2}\n",
         .{
             self.sm83.registers.a,

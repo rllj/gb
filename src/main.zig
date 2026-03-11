@@ -4,24 +4,35 @@ const allocator = std.heap.page_allocator;
 const GB = @import("GB.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const cartridge = @embedFile("roms/02-interrupts.gb");
+    // const cartridge = @embedFile("roms/instr_timing.gb");
+    inline for (.{
+        @embedFile("roms/01-special.gb"),
+        @embedFile("roms/02-interrupts.gb"),
+        @embedFile("roms/03-op sp,hl.gb"),
+        @embedFile("roms/04-op r,imm.gb"),
+        @embedFile("roms/05-op rp.gb"),
+        @embedFile("roms/06-ld r,r.gb"),
+        @embedFile("roms/07-jr,jp,call,ret,rst.gb"),
+        @embedFile("roms/08-misc instrs.gb"),
+        @embedFile("roms/09-op r,r.gb"),
+        @embedFile("roms/10-bit ops.gb"),
+        @embedFile("roms/11-op a,(hl).gb"),
+        @embedFile("roms/instr_timing.gb"),
+    }) |cartridge| {
+        var stdout = std.Io.File.stdout();
+        defer stdout.close(init.io);
+        var buffer: [4096]u8 = undefined;
+        var writer = stdout.writer(init.io, &buffer);
+        defer writer.flush() catch {};
 
-    var stdout = std.Io.File.stdout();
-    defer stdout.close(init.io);
-    var buffer: [4096]u8 = undefined;
-    var writer = stdout.writer(init.io, &buffer);
-    defer writer.flush() catch {};
-
-    var gb: GB = try .init(allocator, init.io, cartridge);
-    defer gb.deinit(allocator);
-    while (true) {
-        if (gb.cycle == 0) {
-            try gb.debug_log(&writer.interface);
-        }
-        try gb.tick();
-        if (gb.cycle % 4 == 0) {
-            if (gb.bus.m1 == 1 and gb.bus.prefix_cb == 0) {
-                try gb.debug_log(&writer.interface);
+        var gb: GB = try .init(allocator, init.io, cartridge);
+        defer gb.deinit(allocator);
+        while (true) {
+            try gb.tick();
+            if (gb.serial_input.items.len > 7 and (std.mem.eql(u8, gb.serial_input.items[gb.serial_input.items.len - 7 ..], "Passed\n") or
+                std.mem.eql(u8, gb.serial_input.items[gb.serial_input.items.len - 6 ..], "Failed")))
+            {
+                break;
             }
         }
     }

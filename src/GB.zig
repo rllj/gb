@@ -19,8 +19,6 @@ pub const TIMER_TMA = 0xFF06;
 pub const TIMER_TAC = 0xFF07;
 
 // TODO boot rom
-// const PPU = @import("PPU.zig");
-// const Timer = @import("Timer.zig");
 const GB = @This();
 sm83: SM83,
 memory: []u8,
@@ -54,30 +52,30 @@ pub fn deinit(self: *GB, allocator: Allocator) void {
 
 /// To be called at 4.194304 MHz.
 pub fn tick(self: *GB) !void {
+    try self.tcycle();
     if (self.cycle % 4 == 0) {
         try self.mcycle();
     }
-    try self.tcycle();
 
     self.cycle += 1;
 }
 
 fn mcycle(self: *GB) !void {
-        const prev_timer = self.timer_mmio();
+    const prev_timer = self.timer_mmio();
 
-        const has_pending_interrupt = self.sm83.ie.to_byte() & self.bus.int.to_byte() == 0;
-        if (self.bus.halt == 0 or !has_pending_interrupt) {
-            const bus = self.sm83.tick(self.bus);
-            self.bus = self.handle_cpu_bus(bus);
-        }
-        self.timer_events = self.timer.tick(
-            prev_timer,
-            self.timer_events.overflow,
-            self.bus,
-        );
-        if (self.timer_events.overflow) {
-            self.bus.int.timer = 1;
-        }
+    const has_pending_interrupt = self.sm83.ie.to_byte() & self.bus.int.to_byte() == 0;
+    if (self.bus.halt == 0 or !has_pending_interrupt) {
+        const bus = self.sm83.tick(self.bus);
+        self.bus = self.handle_cpu_bus(bus);
+    }
+    self.timer_events = self.timer.tick(
+        prev_timer,
+        self.timer_events.overflow,
+        self.bus,
+    );
+    if (self.timer_events.overflow) {
+        self.bus.int.timer = 1;
+    }
 }
 
 fn tcycle(self: *GB) !void {

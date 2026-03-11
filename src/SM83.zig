@@ -1137,19 +1137,16 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         => {
             const cond: Cond = @enumFromInt(@as(u2, @truncate(y)));
             if (!cpu.get_cond(cond)) {
-                cpu.state.cycle += 2;
+                cpu.state.cycle += 4;
             } else {
-                bus = mem_read(bus, cpu.registers.sp);
-                cpu.registers.sp += 1;
+                cpu.state.cycle += 1;
             }
-            cpu.state.cycle += 1;
         },
         inst_state(0o300, 1),
         inst_state(0o310, 1),
         inst_state(0o320, 1),
         inst_state(0o330, 1),
         => {
-            cpu.z = bus.dbus;
             bus = mem_read(bus, cpu.registers.sp);
             cpu.registers.sp += 1;
             cpu.state.cycle += 1;
@@ -1159,14 +1156,24 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o320, 2),
         inst_state(0o330, 2),
         => {
-            cpu.w = bus.dbus;
-            cpu.registers.pc = cpu.wz();
+            cpu.z = bus.dbus;
+            bus = mem_read(bus, cpu.registers.sp);
+            cpu.registers.sp += 1;
             cpu.state.cycle += 1;
         },
         inst_state(0o300, 3),
         inst_state(0o310, 3),
         inst_state(0o320, 3),
         inst_state(0o330, 3),
+        => {
+            cpu.w = bus.dbus;
+            cpu.registers.pc = cpu.wz();
+            cpu.state.cycle += 1;
+        },
+        inst_state(0o300, 4),
+        inst_state(0o310, 4),
+        inst_state(0o320, 4),
+        inst_state(0o330, 4),
         => {
             bus = cpu.fetch_and_decode(bus);
         },

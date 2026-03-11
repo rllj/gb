@@ -15,10 +15,14 @@ pub fn main(init: std.process.Init) !void {
     var gb: GB = try .init(allocator, init.io, cartridge);
     defer gb.deinit(allocator);
     while (true) {
-        try gb.tick_debug(&writer.interface);
-
-        if (std.mem.containsAtLeast(u8, gb.serial_input.items, 1, "Passed\n")) {
-            break;
+        if (gb.cycle == 0) {
+            try gb.debug_log(&writer.interface);
+        }
+        try gb.tick();
+        if (gb.cycle % 4 == 0) {
+            if (gb.bus.m1 == 1 and gb.bus.prefix_cb == 0) {
+                try gb.debug_log(&writer.interface);
+            }
         }
     }
 }

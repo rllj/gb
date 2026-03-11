@@ -4,6 +4,7 @@ zig-out/
 /debug/
 /build/
 /build-*/
+zig-pkg/
 .direnv/
 logfile
 gameboy-doctor

@@ -2,8 +2,9 @@
 //! Apparently, we don't actually know if SM83 was the actual codename.
 //! https://github.com/Gekkio/gb-research/tree/main/sm83-cpu-core
 
-const assert = @import("std").debug.assert;
-const print = @import("std").debug.print;
+const std = @import("std");
+const assert = std.debug.assert;
+const print = std.debug.print;
 
 const SM83 = @This();
 
@@ -13,7 +14,8 @@ z: u8 = 0,
 w: u8 = 0,
 ime: bool = false,
 // Since the gameboy delays the EI instruction by a cycle for some reason.
-ie_counter: u2 = 0,
+ei_counter: u2 = 0,
+ie: IRMask = .{},
 
 // TODO Eventually remove some the fields here, after figuring out which are actually needed.
 /// https://iceboy.a-singer.de/doc/dmg_cpu_connections.html
@@ -52,13 +54,37 @@ pub const Pins = packed struct(u64) {
     }
 };
 
-const IRMask = packed struct(u8) {
-    unused: u3 = 0,
+pub const IRMask = packed struct(u8) {
     vblank: u1 = 0,
     status: u1 = 0,
     timer: u1 = 0,
     serial: u1 = 0,
     joypad: u1 = 0,
+    unused: u3 = 0,
+
+    pub fn to_byte(self: IRMask) u8 {
+        return @bitCast(self);
+    }
+
+    pub fn set(self: IRMask, mask: anytype) Pins {
+        var result: IRMask = self;
+        inline for (@typeInfo(@TypeOf(mask)).@"struct".fields) |field| {
+            @field(result, field.name) = @field(mask, field.name);
+        }
+        return result;
+    }
+};
+
+pub const IF = 0xFF0F;
+pub const IE = 0xFFFF;
+
+// Cheat a little by using unused instruction opcodes to handle interrupts.
+const Interrupts = struct {
+    const vblank = 0o323;
+    const status = 0o333;
+    const timer = 0o343;
+    const serial = 0o353;
+    const joypad = 0o344;
 };
 
 const Registers = packed struct {
@@ -117,9 +143,6 @@ const Registers = packed struct {
 
 const State = struct { opcode: u8, cycle: u8 };
 
-const IF = 0xFF0F;
-const IE = 0xFFFF;
-
 pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
     var bus = input_bus;
 
@@ -134,17 +157,16 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         .mreq = 0,
         .m1 = 0,
         .abus = 0,
+        .halt = 0,
     });
 
-    if (cpu.ie_counter > 0) {
-        cpu.ie_counter -= 1;
-        if (cpu.ie_counter == 0) {
+    if (cpu.ei_counter > 0) {
+        cpu.ei_counter -= 1;
+        if (cpu.ei_counter == 0) {
             cpu.ime = true;
         }
     }
 
-    const x: u2 = @truncate(cpu.state.opcode >> 6);
-    _ = x;
     const y: u3 = @truncate(cpu.state.opcode >> 3);
     const z: u3 = @truncate(cpu.state.opcode);
     if (bus.prefix_cb == 1) {
@@ -266,9 +288,12 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
         // HALT
         inst_state(0o166, 0) => {
-            bus = bus.set(.{
-                .halt = 1,
-            });
+            bus.halt = 1;
+            cpu.state.cycle += 1;
+            return bus; // Interrupts are not serviced on the cycle HALT is executed
+        },
+        inst_state(0o166, 1) => {
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // LD (BC), A
@@ -1221,7 +1246,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
         // EI
         inst_state(0xFB, 0) => {
-            cpu.ie_counter = 2;
+            cpu.ei_counter = 2;
             bus = cpu.fetch_and_decode(bus);
         },
 
@@ -1235,7 +1260,86 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             bus = cpu.fetch_and_decode_extended(bus);
         },
 
+        inst_state(Interrupts.vblank, 0),
+        inst_state(Interrupts.status, 0),
+        inst_state(Interrupts.timer, 0),
+        inst_state(Interrupts.serial, 0),
+        inst_state(Interrupts.joypad, 0),
+        => {
+            cpu.registers.pc -= 1;
+            cpu.state.cycle += 1;
+        },
+        inst_state(Interrupts.vblank, 1),
+        inst_state(Interrupts.status, 1),
+        inst_state(Interrupts.timer, 1),
+        inst_state(Interrupts.serial, 1),
+        inst_state(Interrupts.joypad, 1),
+        => {
+            cpu.registers.sp -= 1;
+            cpu.state.cycle += 1;
+        },
+        inst_state(Interrupts.vblank, 2),
+        inst_state(Interrupts.status, 2),
+        inst_state(Interrupts.timer, 2),
+        inst_state(Interrupts.serial, 2),
+        inst_state(Interrupts.joypad, 2),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
+            cpu.registers.sp -= 1;
+            cpu.state.cycle += 1;
+        },
+        inline inst_state(Interrupts.vblank, 3),
+        inst_state(Interrupts.status, 3),
+        inst_state(Interrupts.timer, 3),
+        inst_state(Interrupts.serial, 3),
+        inst_state(Interrupts.joypad, 3),
+        => |interrupt| {
+            const irq_addr: u16 = comptime switch (interrupt & 0xFF) {
+                Interrupts.vblank => 0x0040,
+                Interrupts.status => 0x0048,
+                Interrupts.timer => 0x0050,
+                Interrupts.serial => 0x0058,
+                Interrupts.joypad => 0x0060,
+                else => unreachable,
+            };
+
+            bus = mem_write(bus, cpu.registers.sp, lsb(cpu.registers.pc));
+            cpu.registers.pc = irq_addr;
+            cpu.state.cycle += 1;
+        },
+        inst_state(Interrupts.vblank, 4),
+        inst_state(Interrupts.status, 4),
+        inst_state(Interrupts.timer, 4),
+        inst_state(Interrupts.serial, 4),
+        inst_state(Interrupts.joypad, 4),
+        => {
+            bus = cpu.fetch_and_decode(bus);
+        },
+
         else => unreachable,
+    }
+
+    if (cpu.ime and cpu.state.cycle == 0) {
+        inline for (@typeInfo(IRMask).@"struct".fields) |struct_field| {
+            const name = struct_field.name;
+            if (comptime std.mem.eql(u8, name, "unused")) continue;
+            const if_field = @field(bus.int, name);
+            const ie_field = @field(cpu.ie, name);
+            const interrupt = @field(Interrupts, name);
+            if (if_field & ie_field == 1) {
+                @field(bus.int, name) = 0;
+                @field(bus.inta, name) = 1;
+                cpu.ime = false;
+                bus = bus.set(.{
+                    .dbus = interrupt,
+                    .mreq = 0,
+                    .rd = 0,
+                    .m1 = 1,
+                    .prefix_cb = 0,
+                });
+                break;
+            }
+        }
     }
 
     return bus;

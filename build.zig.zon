@@ -1,6 +1,12 @@
 .{
     .name = .gb,
     .version = "0.0.1",
+    .dependencies = .{
+        .sokol = .{
+            .url = "git+https://github.com/floooh/sokol-zig.git#9dc0ba4ce97a449ce163807fb9919f79d3848f62",
+            .hash = "sokol-0.1.0-pb1HK-bgNgCjSwRxw2YD7OYtW56GQoJo84ZEtpnhe_j0",
+        },
+    },
     .minimum_zig_version = "0.15.2",
     .paths = .{""},
     .fingerprint = 0xc8d9efeb021f20df,

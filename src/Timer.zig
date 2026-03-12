@@ -1,6 +1,8 @@
 const Pins = @import("SM83.zig").Pins;
 const TIMER_TIMA = @import("GB.zig").TIMER_TIMA;
 
+// Must be extern to guarantee struct field order, so that it may be
+// type-punned over the memory array
 pub const Timer = extern struct {
     sysclk_lo: u8,
     div: u8,

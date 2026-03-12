@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
+const PPU = @import("PPU.zig");
 const SM83 = @import("SM83.zig");
 const Pins = SM83.Pins;
 const Timer = @import("timer.zig").Timer;
@@ -21,6 +22,7 @@ pub const TIMER_TAC = 0xFF07;
 // TODO boot rom
 const GB = @This();
 sm83: SM83,
+ppu: PPU,
 memory: []u8,
 bus: Pins,
 cycle: usize = 0,
@@ -32,11 +34,12 @@ serial_input: std.ArrayList(u8),
 
 pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
     const memory: []u8 = try allocator.alloc(u8, 0x10000);
-    @memset(memory, 0x0);
+    @memset(memory, 0xFF);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
     const serial_input: std.ArrayList(u8) = try .initCapacity(allocator, 4096);
     return .{
         .sm83 = .{},
+        .ppu = .{},
         .memory = memory,
         .bus = .{ .abus = 0x100, .dbus = memory[0x100] },
         .io = io,

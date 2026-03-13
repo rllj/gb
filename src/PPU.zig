@@ -1,11 +1,17 @@
 const PPU = @This();
 
-lcdc: u8,
-scy: u8,
-scx: u8,
+const MMIO = extern struct {
+    lcdc: u8,
+    stat: u8,
+    scy: u8,
+    scx: u8,
+    ly: u8,
+    lyc: u8,
+};
 
-mode: Mode,
-dots_per_mode: usize,
+mmio: *MMIO,
+mode: Mode = .oam_scan,
+dots_per_mode: usize = 0,
 
 const Mode = enum(u2) {
     hblank = 0,

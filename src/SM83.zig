@@ -75,9 +75,6 @@ pub const IRMask = packed struct(u8) {
     }
 };
 
-pub const IF = 0xFF0F;
-pub const IE = 0xFFFF;
-
 // Cheat a little by using unused instruction opcodes to handle interrupts.
 const Interrupts = struct {
     const vblank = 0o323;
@@ -90,26 +87,26 @@ const Interrupts = struct {
 const Registers = packed struct {
     const Flags = packed struct {
         unused: u4 = 0,
-        c: bool,
-        h: bool,
-        n: bool,
-        z: bool,
+        c: bool = false,
+        h: bool = false,
+        n: bool = false,
+        z: bool = false,
     };
 
     ir: u8 = 0x00,
 
-    a: u8 = 0x01,
-    flags: Flags = @bitCast(@as(u8, 0xB0)),
+    a: u8 = 0x00,
+    flags: Flags = @bitCast(@as(u8, 0x00)),
 
     b: u8 = 0x00,
-    c: u8 = 0x13,
+    c: u8 = 0x00,
     d: u8 = 0x00,
-    e: u8 = 0xD8,
-    h: u8 = 0x01,
-    l: u8 = 0x4D,
+    e: u8 = 0x00,
+    h: u8 = 0x00,
+    l: u8 = 0x00,
 
-    sp: u16 = 0xFFFE,
-    pc: u16 = 0x0100,
+    sp: u16 = 0x0000,
+    pc: u16 = 0x0000,
 
     pub fn hl(self: Registers) u16 {
         return pair(self.h, self.l);
@@ -1111,13 +1108,13 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         // RET
         inst_state(0xC9, 0) => {
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.state.cycle += 1;
         },
         inst_state(0xC9, 1) => {
             cpu.z = bus.dbus;
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.state.cycle += 1;
         },
         inst_state(0xC9, 2) => {

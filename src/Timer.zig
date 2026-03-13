@@ -1,6 +1,8 @@
 const Pins = @import("SM83.zig").Pins;
-const TIMER_TIMA = @import("GB.zig").TIMER_TIMA;
+const TIMA = @import("hreg.zig").TIMA;
 
+// Must be extern to guarantee struct field order, so that it may be
+// type-punned over the memory array
 pub const Timer = extern struct {
     sysclk_lo: u8,
     div: u8,
@@ -63,7 +65,6 @@ pub const Timer = extern struct {
     }
 
     fn bus_tima_write(bus: Pins) bool {
-        // TODO constant
-        return bus.abus == TIMER_TIMA and bus.mreq == 1 and bus.wr == 1;
+        return bus.abus == TIMA and bus.mreq == 1 and bus.wr == 1;
     }
 };

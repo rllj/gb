@@ -3,7 +3,6 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
 const bootrom = @import("bootrom.zig").bytes;
-const hreg = @import("hreg.zig");
 const PPU = @import("PPU.zig");
 const SM83 = @import("SM83.zig");
 const Pins = SM83.Pins;
@@ -11,7 +10,6 @@ const Timer = @import("timer.zig").Timer;
 
 const logger = @import("std").log.scoped(.gameboy);
 
-// TODO boot rom
 const GB = @This();
 sm83: SM83,
 ppu: PPU,
@@ -24,19 +22,29 @@ timer_events: Timer.TimerEvents,
 io: std.Io,
 serial_input: std.ArrayList(u8),
 
+pub const JOYP = 0xFF00;
+pub const SERIAL_TRANSFER = 0xFF01;
+pub const SC = 0xFF02;
+pub const IF = 0xFF0F;
+pub const BANK = 0xFF50;
+pub const IE = 0xFFFF;
+
 pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
     const memory: []u8 = try allocator.alloc(u8, 0x10000);
     @memset(memory, 0x00);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
+
+    memory[JOYP] = 0xFF;
+
     const serial_input: std.ArrayList(u8) = try .initCapacity(allocator, 4096);
     return .{
         .sm83 = .{},
-        .ppu = .{ .mmio = @ptrCast(memory[hreg.LCDC .. hreg.LYC + 1]) },
+        .ppu = .{},
         .memory = memory,
         .bus = .{},
         .io = io,
         .serial_input = serial_input,
-        .timer = @ptrCast(memory[hreg.SYSCLK_LO .. hreg.TAC + 1]),
+        .timer = @ptrCast(memory[Timer.SYSCLK_LO .. Timer.TAC + 1]),
         .timer_events = .{},
     };
 }
@@ -88,11 +96,7 @@ fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
             0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
             0xFEA0...0xFEFF => @panic("Not usable"),
             0xFF0F => return self.write_if(bus),
-            hreg.DIV => {
-                self.memory[hreg.DIV] = 0;
-                self.memory[hreg.SYSCLK_LO] = 0;
-            },
-            0xFF00...0xFF03, 0xFF05...0xFF0E, 0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
+            0xFF00...0xFF0E, 0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
             // TODO: I might have to separate this, as HRAM differs ever so slightly from regular RAM by being accessible during a DMA transfer.
             // https://retrocomputing.stackexchange.com/questions/11811/how-does-game-boy-sharp-lr35902-hram-work
             0xFF80...0xFFFE => self.write_ram(bus.abus, bus.dbus),
@@ -138,7 +142,7 @@ fn write_if(_: *GB, bus: Pins) Pins {
 }
 
 fn write_io(self: *GB, addr: u16, data: u8) void {
-    if (addr == hreg.SERIAL_TRANSFER) {
+    if (addr == SERIAL_TRANSFER) {
         std.debug.print("{c}", .{data});
         self.serial_input.appendBounded(data) catch {
             self.serial_input.clearRetainingCapacity();
@@ -146,7 +150,26 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
             logger.warn("Ran out of serial storage, overwriting old data.", .{});
         }; // Stupid, but works for now
     }
-    self.write_ram(addr, data);
+    switch (addr) {
+        Timer.DIV => {
+            self.memory[Timer.DIV] = 0;
+            self.memory[Timer.SYSCLK_LO] = 0;
+        },
+        PPU.LCDC => self.ppu.lcdc = data,
+        PPU.LCDC => self.ppu.lcdc = data,
+        PPU.STAT => self.ppu.stat = data,
+        PPU.SCY => self.ppu.scy = data,
+        PPU.SCX => self.ppu.scx = data,
+        PPU.LY => self.ppu.ly = data,
+        PPU.LYC => self.ppu.lyc = data,
+        // PPU.DMA => self.ppu.dma = data,
+        // PPU.BGP => self.ppu.bgp = data,
+        // PPU.OBP0 => self.ppu.obp0 = data,
+        // PPU.OBP1 => self.ppu.obp1 = data,
+        // PPU.WY => self.ppu.wy = data,
+        // PPU.WX => self.ppu.wx = data,
+        else => self.write_ram(addr, data),
+    }
 }
 
 fn write_ie(self: *GB, data: u8) void {
@@ -163,7 +186,7 @@ fn read_ram(self: *GB, bus: Pins) Pins {
 }
 
 fn read_bootrom(self: *GB, bus: Pins) Pins {
-    if (self.memory[hreg.BANK] & 1 == 0) {
+    if (self.memory[BANK] & 1 == 0) {
         return bus.set(.{ .dbus = bootrom[bus.abus] });
     } else {
         return bus.set(.{ .dbus = self.memory[bus.abus] });
@@ -177,7 +200,18 @@ fn read_oam(self: *GB, bus: Pins) Pins {
 
 fn read_io(self: *GB, bus: Pins) Pins {
     return switch (bus.abus) {
-        hreg.LY => bus.set(.{ .dbus = 0x90 }),
+        PPU.LCDC => bus.set(.{ .dbus = self.ppu.lcdc }),
+        PPU.STAT => bus.set(.{ .dbus = self.ppu.stat }),
+        PPU.SCY => bus.set(.{ .dbus = self.ppu.scy }),
+        PPU.SCX => bus.set(.{ .dbus = self.ppu.scx }),
+        PPU.LY => bus.set(.{ .dbus = self.ppu.ly }),
+        PPU.LYC => bus.set(.{ .dbus = self.ppu.lyc }),
+        // PPU.DMA => bus.set(.{ .dbus = self.ppu.dma }),
+        // PPU.BGP => bus.set(.{ .dbus = self.ppu.bgp }),
+        // PPU.OBP0 => bus.set(.{ .dbus = self.ppu.obp0 }),
+        // PPU.OBP1 => bus.set(.{ .dbus = self.ppu.obp1 }),
+        // PPU.WY => bus.set(.{ .dbus = self.ppu.wy }),
+        // PPU.WX => bus.set(.{ .dbus = self.ppu.wx }),
         else => self.read_ram(bus),
     };
 }
@@ -192,11 +226,11 @@ fn read_ie(self: *GB, bus: Pins) Pins {
 
 fn timer_mmio(self: *GB) Timer {
     return .{
-        .sysclk_lo = self.memory[hreg.SYSCLK_LO],
-        .div = self.memory[hreg.DIV],
-        .tima = self.memory[hreg.TIMA],
-        .tma = self.memory[hreg.TMA],
-        .tac = @bitCast(self.memory[hreg.TAC]),
+        .sysclk_lo = self.memory[Timer.SYSCLK_LO],
+        .div = self.memory[Timer.DIV],
+        .tima = self.memory[Timer.TIMA],
+        .tma = self.memory[Timer.TMA],
+        .tac = @bitCast(self.memory[Timer.TAC]),
     };
 }
 

@@ -21,6 +21,8 @@ pub const TILE_MAP_0_END = 0x9BFF;
 pub const TILE_MAP_1_START = 0x9C00;
 pub const TILE_MAP_1_END = 0x9FFF;
 
+pub const OAM_START = 0xFE00;
+
 const Tile = struct {
     rows: [8]Row,
 
@@ -39,14 +41,18 @@ const Tile = struct {
 };
 
 lcdc: LCDControl = .{},
-stat: u8 = 0,
+stat: Status = @bitCast(@as(u8, 0)),
 scy: u8 = 0,
 scx: u8 = 0,
 ly: u8 = 0,
 lyc: u8 = 0,
+bgp: Palette = @bitCast(@as(u8, 0)),
+obp0: Palette = @bitCast(@as(u8, 0)),
+obp1: Palette = @bitCast(@as(u8, 0)),
 
-mode: Mode = .oam_scan,
 dots_per_mode: usize = 0,
+
+display: [160 * 144]u8 = undefined,
 
 // https://gbdev.io/pandocs/LCDC.html
 const LCDControl = packed struct(u8) {
@@ -60,11 +66,35 @@ const LCDControl = packed struct(u8) {
     lcd_enable: u1 = 0,
 };
 
+const Status = packed struct(u8) {
+    mode: Mode = .oam_scan,
+    ly_lyc_eq: bool,
+    mode_0_stat_int: bool,
+    mode_1_stat_int: bool,
+    mode_2_stat_int: bool,
+    lyc_stat_int: bool,
+    unused: u1,
+};
+
 const Mode = enum(u2) {
     hblank = 0,
     vblank = 1,
     oam_scan = 2,
     draw = 3,
+};
+
+const Palette = packed struct(u8) {
+    id0: Colour,
+    id1: Colour,
+    id2: Colour,
+    id3: Colour,
+};
+
+const Colour = enum(u2) {
+    white = 0,
+    light_gray = 1,
+    dark_gray = 2,
+    black = 3,
 };
 
 const Pixel = struct {
@@ -73,6 +103,19 @@ const Pixel = struct {
 
 /// To be called at 4.194304 MHz.
 pub fn dot(self: *PPU) void {
+    // TODO trigger interrupts
+    self.stat.ly_lyc_eq = self.ly == self.lyc;
+
+    const background_left = self.scx;
+    const background_top = self.scy;
+    const background_right = self.scx +% 159;
+    const background_bottom = self.scy +% 143;
+
+    _ = background_left;
+    _ = background_top;
+    _ = background_right;
+    _ = background_bottom;
+
     switch (self.mode) {
         .oam_scan => {
             self.dots_per_mode += 1;

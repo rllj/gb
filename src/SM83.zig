@@ -1332,7 +1332,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             const interrupt = @field(Interrupts, name);
             if (if_field & ie_field == 1) {
                 @field(bus.int, name) = 0;
-                @field(bus.inta, name) = 1;
+                // @field(bus.inta, name) = 1; TODO This might be useless
                 cpu.ime = false;
                 bus = bus.set(.{
                     .dbus = interrupt,

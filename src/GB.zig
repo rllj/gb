@@ -40,7 +40,7 @@ pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
     const serial_input: std.ArrayList(u8) = try .initCapacity(allocator, 4096);
     return .{
         .sm83 = .{},
-        .ppu = .{},
+        .ppu = .{ .oam = memory[0xFE00..0xFEA0], .vram = memory[0x8000..0xA000] },
         .memory = memory,
         .bus = .{},
         .io = io,
@@ -193,7 +193,7 @@ fn write_ie(self: *GB, data: u8) void {
 fn read_vram(self: *GB, bus: Pins) Pins {
     if (self.oam_transfer_cycle != 0) return bus;
     if (self.ppu.stat.mode == .draw) return bus;
-    return bus;
+    return bus.set(.{ .dbus = self.memory[bus.abus] });
 }
 
 fn read_ram(self: *GB, bus: Pins) Pins {
@@ -213,7 +213,7 @@ fn read_bootrom(self: *GB, bus: Pins) Pins {
 fn read_oam(self: *GB, bus: Pins) Pins {
     if (self.oam_transfer_cycle != 0) return bus;
     if (self.ppu.stat.mode == .draw or self.ppu.stat.mode == .oam_scan) return bus;
-    return bus;
+    return bus.set(.{ .dbus = self.memory[bus.abus] });
 }
 
 fn read_io(self: *GB, bus: Pins) Pins {

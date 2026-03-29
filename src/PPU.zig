@@ -1,3 +1,5 @@
+const BoundedArray = @import("common.zig").BoundedArray;
+
 const PPU = @This();
 
 pub const LCDC = 0xFF40;
@@ -40,19 +42,14 @@ const Tile = struct {
     }
 };
 
-lcdc: LCDControl = .{},
-stat: Status = @bitCast(@as(u8, 0)),
-scy: u8 = 0,
-scx: u8 = 0,
-ly: u8 = 0,
-lyc: u8 = 0,
-bgp: Palette = @bitCast(@as(u8, 0)),
-obp0: Palette = @bitCast(@as(u8, 0)),
-obp1: Palette = @bitCast(@as(u8, 0)),
+const ObjectAttribute = packed struct(u32) {
+    y_pos: u8,
+    x_pos: u8,
+    tile_idx: u8,
+    flags: Flags,
 
-dots_per_mode: usize = 0,
-
-display: [160 * 144]u8 = undefined,
+    const Flags = packed struct(u8) { priority: bool, y_flip: bool, x_flip: bool, dmg_palette: u1, cgb_reserved: u4 };
+};
 
 // https://gbdev.io/pandocs/LCDC.html
 const LCDControl = packed struct(u8) {
@@ -101,10 +98,40 @@ const Pixel = struct {
     colour_index: u2,
 };
 
+const Bus = struct {
+    dbus: u16,
+    abus: u16,
+    mreq: bool,
+};
+
+lcdc: LCDControl = .{},
+stat: Status = @bitCast(@as(u8, 0)),
+scy: u8 = 0,
+scx: u8 = 0,
+ly: u8 = 0,
+lyc: u8 = 0,
+bgp: Palette = @bitCast(@as(u8, 0)),
+obp0: Palette = @bitCast(@as(u8, 0)),
+obp1: Palette = @bitCast(@as(u8, 0)),
+
+// TODO This certainly isn't optimal, and once I find out why OAM scan (mode 2)
+// doesn't take 82 cycles I'll make the PPU commicate with memory via a Bus
+// like the CPU.
+oam: []u8,
+vram: []u8,
+
+dots_per_mode: usize = 0,
+
+display: [160 * 144]u8 = undefined,
+
 /// To be called at 4.194304 MHz.
-pub fn dot(self: *PPU) void {
+pub fn dot(self: *PPU, in_bus: Bus) Bus {
+    _ = in_bus;
+
     // TODO trigger interrupts
     self.stat.ly_lyc_eq = self.ly == self.lyc;
+
+    const sprite_height = if (self.lcdc.obj_size == 0) 8 else 16;
 
     const background_left = self.scx;
     const background_top = self.scy;
@@ -116,11 +143,32 @@ pub fn dot(self: *PPU) void {
     _ = background_right;
     _ = background_bottom;
 
+    var visible_sprites = BoundedArray(ObjectAttribute){};
+
     switch (self.mode) {
         .oam_scan => {
-            self.dots_per_mode += 1;
+            // if (self.dots_per_mode % 2 == 0) {
+            //     bus.abus = OAM_START + self.dots_per_mode;
+            // } else {
+            //     const y_pos: u8 = @truncate(bus.dbus);
+            //     const x_pos: u8 = @truncate(bus.dbus >> 8);
+            //
+            //     if (x_pos != 0 and self.ly + 16 >= y_pos and self.ly + 16 < y_pos + sprite_height) {
+            //         visible_sprites[num_visible_sprites] =
+            //         num_visible_sprites += 1;
+            //     }
+            // }
 
+            self.dots_per_mode += 1;
             if (self.dots_per_mode == 80) {
+                // TODO cycle-step
+                const oam: []ObjectAttribute = @ptrCast(self.oam);
+                for (oam) |oa| {
+                    if (oa.y_pos != 0 and self.ly + 16 >= oa.y_pos and self.ly + 16 < oa.y_pos + sprite_height) {
+                        visible_sprites.push(oa);
+                    }
+                }
+
                 self.mode = .draw;
             }
         },

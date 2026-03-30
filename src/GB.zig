@@ -92,7 +92,7 @@ fn mcycle(self: *GB) !void {
 }
 
 fn tcycle(self: *GB) !void {
-    _ = self;
+    self.ppu.dot();
 }
 
 fn handle_cpu_bus(self: *GB, bus: Pins) Pins {

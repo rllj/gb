@@ -97,6 +97,8 @@ lyc: u8 = 0,
 bgp: Palette = @bitCast(@as(u8, 0)),
 obp0: Palette = @bitCast(@as(u8, 0)),
 obp1: Palette = @bitCast(@as(u8, 0)),
+wy: u8 = 0,
+wx: u8 = 0,
 
 // TODO This certainly isn't optimal, and once I find out why OAM scan (mode 2)
 // doesn't take 84 cycles I'll make the PPU commicate with memory via a Bus
@@ -113,6 +115,7 @@ fetcher_index: u1 = 0,
 fetcher_buffer: [8]u2 = .{0} ** 8,
 fetcher_tile_x: u8 = 0,
 fetcher_curr_tile: u8 = 0,
+fifo_discard_scroll: u8 = 0,
 // TODO shift register data structure instead
 fifo: std.Deque(u2),
 
@@ -123,13 +126,19 @@ fn fifo_fetch(self: *PPU) void {
     switch (self.fetcher_state) {
         .fetch_tile => {
             if (self.advance_fetcher()) {
-                const x: u16 = @truncate(self.fetcher_tile_x + self.scx / 8);
-                const y: u16 = @truncate((self.ly + self.scy) / 8);
+                const x: u16 = (self.fetcher_tile_x + self.scx / 8) & 0x1F;
+                const y: u16 = (self.ly + self.scy) / 8;
 
-                // TODO tilemap 2
+                var tilemap_address: u16 = TILE_MAP_0_START;
+                if (self.lcdc.bg_tilemap_area == 1 and !self.inside_window(x)) {
+                    tilemap_address = TILE_MAP_1_START;
+                }
+                if (self.lcdc.window_tilemap_area == 1 and self.inside_window(x)) {
+                    tilemap_address = TILE_MAP_1_START;
+                }
 
                 const idx = x + y * 32;
-                self.fetcher_curr_tile = self.read_vram(TILE_MAP_0_START + idx);
+                self.fetcher_curr_tile = self.read_vram(tilemap_address + idx);
 
                 self.fetcher_state = .fetch_low;
             }
@@ -137,10 +146,10 @@ fn fifo_fetch(self: *PPU) void {
         .fetch_low => {
             if (self.advance_fetcher()) {
                 const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => TILE_DATA_START + self.fetcher_curr_tile,
-                    1 => add_as_signed(TILE_DATA_MIDDLE, self.fetcher_curr_tile),
+                    0 => add_as_signed(TILE_DATA_MIDDLE, self.fetcher_curr_tile * 16),
+                    1 => TILE_DATA_START + self.fetcher_curr_tile * 16,
                 };
-                const y: u16 = @truncate((self.ly + self.scy) / 8);
+                const y: u16 = (self.ly + self.scy) % 8;
 
                 const tile_data_idx = tile_data_base + y * 2;
                 const tile_data = self.read_vram(tile_data_idx);
@@ -156,10 +165,10 @@ fn fifo_fetch(self: *PPU) void {
         .fetch_high => {
             if (self.advance_fetcher()) {
                 const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => TILE_DATA_START + self.fetcher_curr_tile,
-                    1 => add_as_signed(TILE_DATA_MIDDLE, self.fetcher_curr_tile),
+                    0 => add_as_signed(TILE_DATA_MIDDLE, self.fetcher_curr_tile * 16),
+                    1 => TILE_DATA_START + self.fetcher_curr_tile * 16,
                 };
-                const y: u16 = @truncate((self.ly + self.scy) / 8);
+                const y: u16 = (self.ly + self.scy) % 8;
 
                 const tile_data_idx = tile_data_base + y * 2 + 1;
                 const tile_data = self.read_vram(tile_data_idx);
@@ -175,6 +184,7 @@ fn fifo_fetch(self: *PPU) void {
         .idle => {
             if (self.fifo_enqueue(self.fetcher_buffer)) {
                 self.fetcher_state = .fetch_tile;
+                self.fetcher_tile_x += 1;
             }
         },
     }
@@ -208,17 +218,22 @@ fn put_pixel(self: *PPU, pixel: u2) void {
 }
 
 fn reset_scanline(self: *PPU) void {
-    if (self.scanline_pixel != 160) {
-        std.debug.panic("Expected 160, got {}", .{self.scanline_pixel});
-    }
+    self.visible_sprites = .{};
     self.scanline_pixel = 0;
     self.fetcher_tile_x = 0;
     self.fifo = .{ .buffer = self.fifo.buffer, .head = 0, .len = 0 };
 }
 
+// TODO
+fn inside_window(self: *PPU, x: u16) bool {
+    _ = self;
+    _ = x;
+    return false;
+}
+
 /// To be called at 4.194304 MHz.
 pub fn dot(self: *PPU) void {
-
+    if (self.lcdc.lcd_enable == 0) return;
     // TODO trigger interrupts
     self.stat.ly_lyc_eq = self.ly == self.lyc;
 
@@ -238,6 +253,7 @@ pub fn dot(self: *PPU) void {
                     }
                 }
 
+                self.fifo_discard_scroll = self.scx % 8;
                 self.stat.mode = .draw;
             }
         },
@@ -246,27 +262,18 @@ pub fn dot(self: *PPU) void {
 
             self.fifo_fetch();
             if (self.fifo.len > 8) {
-                self.put_pixel(self.fifo_dequeue());
-                self.scanline_pixel += 1;
+                if (self.fifo_discard_scroll != 0) {
+                    _ = self.fifo_dequeue();
+                    self.fifo_discard_scroll -= 1;
+                } else {
+                    self.put_pixel(self.fifo_dequeue());
+                    self.scanline_pixel += 1;
+                }
             }
 
-            // Fetcher: get tile (2 dots)
-            // Fetcher: get low (2 dots)
-            // Fetcher: get high, put row in fifo (2 dots)
-            // repeat steps above once
-            // Fifo: put one pixel, Fetcher: get tile (1 dot)
-            // Fifo: put one pixel, Fetcher: get tile (1 dot)
-            // Fifo: put one pixel, Fetcher: get low (1 dot)
-            // Fifo: put one pixel, Fetcher: get low (1 dot)
-            // Fifo: put one pixel, Fetcher: get high (1 dot)
-            // Fifo: put one pixel, Fetcher: get high (1 dot)
-            // Fifo: put one pixel, Fetcher: idle (1 dot)
-            // Fifo: put one pixel, Fetcher: put row in fifo (1 dot)
-
-            // Alternatively: self.current_pixel == 160
             if (self.scanline_pixel == 160) {
-                self.stat.mode = .hblank;
                 self.reset_scanline();
+                self.stat.mode = .hblank;
             }
         },
         .hblank => {
@@ -277,18 +284,19 @@ pub fn dot(self: *PPU) void {
                     self.stat.mode = .vblank;
                 } else {
                     self.stat.mode = .oam_scan;
-                    self.ly += 1;
                 }
+                self.ly += 1;
                 self.dots_per_mode = 0;
             }
         },
         .vblank => {
+            if (self.dots_per_mode % 456 == 0) {
+                self.ly += 1;
+            }
+
             self.dots_per_mode += 1;
-            self.ly += 1;
 
             if (self.ly == 153) {
-                // We need to clear the visible sprites buffer before drawing the next line;
-                self.visible_sprites = .{};
                 self.dots_per_mode = 0;
                 self.ly = 0;
                 self.stat.mode = .oam_scan;

@@ -183,13 +183,12 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
         PPU.SCX => self.ppu.scx = data,
         PPU.LY => {},
         PPU.LYC => self.ppu.lyc = data,
-        PPU.DMA => self.oam_transfer_cycle = 160, // check later; Might be off-by-one
-        // PPU.DMA => self.ppu.dma = data,
-        // PPU.BGP => self.ppu.bgp = data,
-        // PPU.OBP0 => self.ppu.obp0 = data,
-        // PPU.OBP1 => self.ppu.obp1 = data,
-        // PPU.WY => self.ppu.wy = data,
-        // PPU.WX => self.ppu.wx = data,
+        PPU.DMA => self.oam_transfer_cycle = 160, // TODO check later; Might be off-by-one
+        PPU.BGP => self.ppu.bgp = @bitCast(data),
+        PPU.OBP0 => self.ppu.obp0 = @bitCast(data),
+        PPU.OBP1 => self.ppu.obp1 = @bitCast(data),
+        PPU.WY => self.ppu.wy = data,
+        PPU.WX => self.ppu.wx = data,
         else => self.write_ram(addr, data),
     }
 }
@@ -233,12 +232,12 @@ fn read_io(self: *GB, bus: Pins) Pins {
         PPU.SCX => bus.set(.{ .dbus = self.ppu.scx }),
         PPU.LY => bus.set(.{ .dbus = self.ppu.ly }),
         PPU.LYC => bus.set(.{ .dbus = self.ppu.lyc }),
-        // PPU.DMA => bus.set(.{ .dbus = self.ppu.dma }),
-        // PPU.BGP => bus.set(.{ .dbus = self.ppu.bgp }),
-        // PPU.OBP0 => bus.set(.{ .dbus = self.ppu.obp0 }),
-        // PPU.OBP1 => bus.set(.{ .dbus = self.ppu.obp1 }),
-        // PPU.WY => bus.set(.{ .dbus = self.ppu.wy }),
-        // PPU.WX => bus.set(.{ .dbus = self.ppu.wx }),
+        PPU.DMA => @panic("Read from DMA (this might be possible, I just haven't figured out what happens yet)"),
+        PPU.BGP => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.bgp)) }),
+        PPU.OBP0 => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.obp0)) }),
+        PPU.OBP1 => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.obp1)) }),
+        PPU.WY => bus.set(.{ .dbus = self.ppu.wy }),
+        PPU.WX => bus.set(.{ .dbus = self.ppu.wx }),
         else => self.read_ram(bus),
     };
 }

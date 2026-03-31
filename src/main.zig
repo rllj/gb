@@ -15,18 +15,19 @@ pub fn main(init: std.process.Init) !void {
     try sdl3.init(init_flags);
     defer sdl3.quit(init_flags);
 
-    const window, const renderer = try sdl3.render.Renderer.initWithWindow("Test", SCREEN_WIDTH, SCREEN_HEIGHT, .{});
+    const window, const renderer = try sdl3.render.Renderer.initWithWindow("Gameboy", SCREEN_WIDTH, SCREEN_HEIGHT, .{});
     defer window.deinit();
     defer renderer.deinit();
 
     const texture: sdl3.render.Texture = try renderer.createTexture(.packed_rgba_8_8_8_8, .streaming, 160, 144);
+    try texture.setScaleMode(.nearest);
 
-    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/instr_timing.gb"));
+    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/tetris.gb"));
     defer gb.deinit(init.gpa);
 
     {
         const data, _ = try texture.lock(null);
-        @memcpy(data, @as([]u8, @ptrCast(&gb.ppu.display)));
+        @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
         texture.unlock();
     }
 
@@ -40,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
             };
         if (gb.ppu.ly == 144) {
             const data, _ = try texture.lock(null);
-            @memcpy(data, @as([]u8, @ptrCast(&gb.ppu.display)));
+            @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
             texture.unlock();
 
             try renderer.clear();
@@ -61,11 +62,11 @@ pub fn main(init: std.process.Init) !void {
 //
 //     const start = std.Io.Clock.now(.awake, init.io);
 //     var inst_cnt: usize = 0;
-//     const cartridge = @embedFile("roms/01-special.gb");
+//     const cartridge = @embedFile("roms/07-jr,jp,call,ret,rst.gb");
 //     var gb: GB = try .init(allocator, init.io, cartridge);
 //     defer gb.deinit(allocator);
 //     while (true) {
-//         try gb.tick();
+//         gb.tick();
 //         inst_cnt += 1;
 //         if (gb.serial_input.items.len > 7 and
 //             (std.mem.eql(u8, gb.serial_input.items[gb.serial_input.items.len - 7 ..], "Passed\n") or

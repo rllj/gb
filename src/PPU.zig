@@ -177,7 +177,7 @@ fn fifo_fetch(self: *PPU) void {
         .fetch_tile => {
             if (self.advance_fetcher()) {
                 const x: u16 = (self.fetcher_tile_x + self.scx / 8) & 0x1F;
-                const y: u16 = self.ly / 8 + self.scy / 8;
+                const y: u16 = (@as(u16, self.ly) + self.scy) / 8;
 
                 var tilemap_address: u16 = TILE_MAP_0_START;
                 if (self.lcdc.bg_tilemap_area == 1 and !self.inside_window(x)) {
@@ -336,19 +336,20 @@ pub fn dot(self: *PPU) void {
                     self.stat.mode = .vblank;
                     self.temp_ready_to_render = true;
                 } else {
-                    self.dots_per_mode = 0;
                     self.stat.mode = .oam_scan;
+                    self.ly += 1;
                 }
-                self.ly += 1;
+                self.dots_per_mode = 0;
             }
         },
         .vblank => {
             self.temp_ready_to_render = false;
+
+            self.dots_per_mode += 1;
+
             if (self.dots_per_mode % 456 == 0) {
                 self.ly += 1;
             }
-
-            self.dots_per_mode += 1;
 
             if (self.ly == 153) {
                 self.dots_per_mode = 0;

@@ -22,23 +22,20 @@ pub fn main(init: std.process.Init) !void {
     const texture: sdl3.render.Texture = try renderer.createTexture(.packed_rgba_8_8_8_8, .streaming, 160, 144);
     try texture.setScaleMode(.nearest);
 
-    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/01-special.gb"));
+    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/06-ld r,r.gb"));
     defer gb.deinit(init.gpa);
+
+    var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
 
     var quit = false;
     while (!quit) {
         while (!gb.ppu.temp_ready_to_render) {
             gb.tick();
         }
-
         gb.ppu.temp_ready_to_render = false;
 
-        while (sdl3.events.poll()) |event|
-            switch (event) {
-                .quit => quit = true,
-                .terminating => quit = true,
-                else => {},
-            };
+        _ = fps_capper.delay();
+
         const data, _ = try texture.lock(null);
         @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
         texture.unlock();
@@ -46,6 +43,13 @@ pub fn main(init: std.process.Init) !void {
         try renderer.clear();
         try renderer.renderTexture(texture, null, null);
         try renderer.present();
+
+        while (sdl3.events.poll()) |event|
+            switch (event) {
+                .quit => quit = true,
+                .terminating => quit = true,
+                else => {},
+            };
     }
 }
 

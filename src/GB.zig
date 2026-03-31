@@ -98,13 +98,13 @@ fn tcycle(self: *GB) !void {
 fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
     if (bus.mreq == 1 and bus.wr == 1) {
         switch (bus.abus) {
-            0x0000...0x7FFF => std.debug.panic("Attempt to write to ROM at 0x{X:0>4}", .{bus.abus}),
+            0x0000...0x7FFF => std.debug.print("Attempt to write to ROM at 0x{X:0>4}\n", .{bus.abus}),
             0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
             0xA000...0xBFFF => self.write_ram(bus.abus, bus.dbus),
             0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),
             0xE000...0xFDFF => @panic("Attempt to write to echo area"), // TODO: not sure what is supposed to happen here
             0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
-            0xFEA0...0xFEFF => @panic("Not usable"),
+            0xFEA0...0xFEFF => std.debug.print("Illegal write at address 0x{X:0>2}\n", .{bus.abus}),
             0xFF0F => return self.write_if(bus),
             0xFF00...0xFF0E, 0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
             0xFF80...0xFFFE => self.write_hram(bus.abus, bus.dbus),
@@ -156,6 +156,9 @@ fn write_if(_: *GB, bus: Pins) Pins {
 
 fn write_io(self: *GB, addr: u16, data: u8) void {
     if (self.oam_transfer_cycle != 0) return;
+    if (addr == SERIAL_TRANSFER) {
+        std.debug.print("{c}", .{data});
+    }
     switch (addr) {
         Timer.DIV => {
             self.memory[Timer.DIV] = 0;

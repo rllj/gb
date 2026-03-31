@@ -1,12 +1,12 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
-    const sokol = b.dependency("sokol", .{
-        .target = target,
+    const sdl3 = b.dependency("sdl3", .{
         .optimize = optimize,
+        .target = target,
     });
 
     const exe = b.addExecutable(.{
@@ -15,15 +15,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .target = target,
             .root_source_file = b.path("src/main.zig"),
-            .imports = &.{.{
-                .name = "sokol",
-                .module = sokol.module("sokol"),
-            }},
         }),
     });
+    exe.root_module.addImport("sdl3", sdl3.module("sdl3"));
+    b.installArtifact(exe);
 
     const check = b.step("check", "Check step for ZLS");
     check.dependOn(&exe.step);
 
-    b.installArtifact(exe);
+    const run = b.addRunArtifact(exe);
+    const run_step = b.step("run", "Run the application");
+
+    run_step.dependOn(&run.step);
 }

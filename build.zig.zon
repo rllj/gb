@@ -2,9 +2,9 @@
     .name = .gb,
     .version = "0.0.1",
     .dependencies = .{
-        .sokol = .{
-            .url = "git+https://github.com/floooh/sokol-zig.git#9dc0ba4ce97a449ce163807fb9919f79d3848f62",
-            .hash = "sokol-0.1.0-pb1HK-bgNgCjSwRxw2YD7OYtW56GQoJo84ZEtpnhe_j0",
+        .sdl3 = .{
+            .url = "git+https://codeberg.org/7Games/zig-sdl3?ref=master#97cf7263341b6596c902ae5ee12e134b5cb94a2a",
+            .hash = "sdl3-0.1.9-NmT1QwGEJwC2-0S8SCWp6uVne9y_GdbNFVhkrwb3Cw54",
         },
     },
     .minimum_zig_version = "0.15.2",

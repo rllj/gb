@@ -1,5 +1,4 @@
 const Pins = @import("SM83.zig").Pins;
-const TIMA = @import("hreg.zig").TIMA;
 
 // Must be extern to guarantee struct field order, so that it may be
 // type-punned over the memory array
@@ -9,6 +8,12 @@ pub const Timer = extern struct {
     tima: u8,
     tma: u8,
     tac: TimerControl,
+
+    pub const SYSCLK_LO = 0xFF03;
+    pub const DIV = 0xFF04;
+    pub const TIMA = 0xFF05;
+    pub const TMA = 0xFF06;
+    pub const TAC = 0xFF07;
 
     const TimerControl = packed struct(u8) {
         clock_select: u2,

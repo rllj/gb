@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const BoundedArray = @import("common.zig").BoundedArray;
+const Pins = @import("SM83.zig").Pins;
 
 const PPU = @This();
 
@@ -40,7 +41,13 @@ obp0: Palette = @bitCast(@as(u8, 0)),
 obp1: Palette = @bitCast(@as(u8, 0)),
 wy: u8 = 0,
 wx: u8 = 0,
+// TODO remove
 temp_ready_to_render: bool = false,
+// The "stat line" is what the Pandocs call a shared state between each of the
+// possible stat interrupts. The actual STAT interrupt is triggered by a rising
+// edge on the shared STAT line, meaning we need to store the prevous state
+// here.
+stat_line: u1 = 0,
 
 // TODO This certainly isn't optimal, and once I find out why OAM scan (mode 2)
 // doesn't take 84 cycles I'll make the PPU commicate with memory via a Bus
@@ -173,15 +180,22 @@ const Fifo = struct {
 };
 
 /// To be called at 4.194304 MHz.
-pub fn dot(self: *PPU) void {
+pub fn dot(self: *PPU, bus: *Pins) void {
     if (self.lcdc.lcd_enable == 0) return;
-    // TODO trigger interrupts
+
+    var stat_int: u1 = 0;
+
     self.stat.ly_lyc_eq = self.ly == self.lyc;
+    if (self.stat.ly_lyc_eq and self.stat.lyc_stat_int) {
+        stat_int = 1;
+    }
 
     const sprite_height: u8 = if (self.lcdc.obj_size == 0) 8 else 16;
 
     switch (self.stat.mode) {
         .oam_scan => {
+            if (self.stat.mode_2_stat_int) stat_int = 1;
+
             self.dots_per_mode += 1;
             if (self.dots_per_mode == 80) {
                 // TODO cycle-step
@@ -218,6 +232,8 @@ pub fn dot(self: *PPU) void {
             }
         },
         .hblank => {
+            if (self.stat.mode_0_stat_int) stat_int = 1;
+
             self.dots_per_mode += 1;
 
             if (self.dots_per_mode == 456) {
@@ -227,18 +243,22 @@ pub fn dot(self: *PPU) void {
                 } else {
                     self.stat.mode = .oam_scan;
                     self.ly += 1;
+                    self.dots_per_mode = 0;
                 }
-                self.dots_per_mode = 0;
             }
         },
         .vblank => {
-            self.temp_ready_to_render = false;
-
-            self.dots_per_mode += 1;
+            if (self.stat.mode_1_stat_int) stat_int = 1;
 
             if (self.dots_per_mode % 456 == 0) {
                 self.ly += 1;
             }
+
+            if (self.ly == 144) {
+                bus.int.vblank = 1;
+            }
+
+            self.dots_per_mode += 1;
 
             if (self.ly == 153) {
                 self.dots_per_mode = 0;
@@ -247,6 +267,11 @@ pub fn dot(self: *PPU) void {
             }
         },
     }
+
+    if (stat_int == 1 and self.stat_line == 0) {
+        bus.int.status = 1;
+    }
+    self.stat_line = stat_int;
 }
 
 fn read_vram(self: *const PPU, addr: u16) u8 {

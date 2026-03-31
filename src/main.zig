@@ -22,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
     const texture: sdl3.render.Texture = try renderer.createTexture(.packed_rgba_8_8_8_8, .streaming, 160, 144);
     try texture.setScaleMode(.nearest);
 
-    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/06-ld r,r.gb"));
+    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/interrupt_time.gb"));
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };

@@ -1220,7 +1220,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o377, 1),
         => {
             bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
-            cpu.registers.sp -= 1;
+            cpu.registers.sp -%= 1;
             cpu.state.cycle += 1;
         },
         inst_state(0o307, 2),

@@ -11,14 +11,15 @@ const Timer = @import("timer.zig").Timer;
 const logger = @import("std").log.scoped(.gameboy);
 
 const GB = @This();
+
 sm83: SM83,
 ppu: PPU,
 memory: []u8,
 bus: Pins,
-cycle: usize = 0,
 timer: *Timer,
 timer_events: Timer.TimerEvents,
 oam_transfer_cycle: u8,
+cycle: usize = 0,
 
 io: std.Io,
 
@@ -38,10 +39,7 @@ pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
 
     return .{
         .sm83 = .{},
-        .ppu = .{
-            .oam = memory[0xFE00..0xFEA0],
-            .vram = memory[0x8000..0xA000],
-        },
+        .ppu = .{ .oam = memory[0xFE00..0xFEA0], .vram = memory[0x8000..0xA000] },
         .memory = memory,
         .bus = .{},
         .io = io,
@@ -57,7 +55,7 @@ pub fn deinit(self: *GB, allocator: Allocator) void {
 
 /// To be called at 4.194304 MHz.
 pub fn tick(self: *GB) void {
-    try self.tcycle();
+    self.tcycle();
     if (self.cycle % 4 == 0) {
         self.mcycle();
     }
@@ -91,8 +89,8 @@ fn mcycle(self: *GB) void {
     }
 }
 
-fn tcycle(self: *GB) !void {
-    self.ppu.dot();
+fn tcycle(self: *GB) void {
+    self.ppu.dot(&self.bus);
 }
 
 fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
@@ -102,7 +100,7 @@ fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
             0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
             0xA000...0xBFFF => self.write_ram(bus.abus, bus.dbus),
             0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),
-            0xE000...0xFDFF => @panic("Attempt to write to echo area"), // TODO: not sure what is supposed to happen here
+            0xE000...0xFDFF => self.write_ram(bus.abus - 0x2000, bus.dbus),
             0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
             0xFEA0...0xFEFF => std.debug.print("Illegal write at address 0x{X:0>2}\n", .{bus.abus}),
             0xFF0F => return self.write_if(bus),
@@ -119,7 +117,7 @@ fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
             0xC000...0xDFFF => self.read_ram(bus),
             0xE000...0xFDFF => self.read_ram(bus.set(.{ .abus = bus.abus - 0x2000 })),
             0xFE00...0xFE9F => self.read_oam(bus),
-            0xFEA0...0xFEFF => @panic("Not usable"),
+            0xFEA0...0xFEFF => std.debug.panic("Illegal read at address 0x{X:0>2}\n", .{bus.abus}),
             0xFF0F => self.read_if(bus),
             0xFF00...0xFF0E, 0xFF10...0xFF7F => self.read_io(bus),
             0xFF80...0xFFFE => self.read_ram(bus),
@@ -165,12 +163,12 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
             self.memory[Timer.SYSCLK_LO] = 0;
         },
         PPU.LCDC => self.ppu.lcdc = @bitCast(data),
-        PPU.STAT => self.ppu.stat = @bitCast(data), // TODO implement stat write bug.
+        PPU.STAT => self.ppu.stat = @bitCast(data & 0b01111100), // TODO implement stat write bug.
         PPU.SCY => self.ppu.scy = data,
         PPU.SCX => self.ppu.scx = data,
         PPU.LY => {},
         PPU.LYC => self.ppu.lyc = data,
-        PPU.DMA => self.oam_transfer_cycle = 160, // TODO check later; Might be off-by-one
+        PPU.DMA => self.oam_transfer_cycle = 160,
         PPU.BGP => self.ppu.bgp = @bitCast(data),
         PPU.OBP0 => self.ppu.obp0 = @bitCast(data),
         PPU.OBP1 => self.ppu.obp1 = @bitCast(data),

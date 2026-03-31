@@ -29,6 +29,40 @@ pub const TILE_MAP_1_END = 0x9FFF;
 
 pub const OAM_START = 0xFE00;
 
+lcdc: LCDControl = .{},
+stat: Status = @bitCast(@as(u8, 0)),
+scy: u8 = 0,
+scx: u8 = 0,
+ly: u8 = 0,
+lyc: u8 = 0,
+bgp: Palette = @bitCast(@as(u8, 0)),
+obp0: Palette = @bitCast(@as(u8, 0)),
+obp1: Palette = @bitCast(@as(u8, 0)),
+wy: u8 = 0,
+wx: u8 = 0,
+temp_ready_to_render: bool = false,
+
+// TODO This certainly isn't optimal, and once I find out why OAM scan (mode 2)
+// doesn't take 84 cycles I'll make the PPU commicate with memory via a Bus
+// like the CPU.
+oam: []u8,
+vram: []u8,
+
+dots_per_mode: usize = 0,
+scanline_pixel: u8 = 0,
+visible_sprites: BoundedArray(ObjectAttribute, 10) = .{},
+
+fetcher_state: FetchState = .fetch_tile,
+fetcher_index: u1 = 0,
+fetcher_buffer: u16 = 0,
+fetcher_tile_x: u8 = 0,
+fetcher_curr_tile: u16 = 0,
+fifo_discard_scroll: u8 = 0,
+fifo: Fifo = .{},
+
+// TODO The PPU shouldn't own the display, of course
+display: [160 * 144]u32 = .{0x00} ** (160 * 144),
+
 const ObjectAttribute = packed struct(u32) {
     y_pos: u8,
     x_pos: u8,
@@ -138,39 +172,92 @@ const Fifo = struct {
     }
 };
 
-lcdc: LCDControl = .{},
-stat: Status = @bitCast(@as(u8, 0)),
-scy: u8 = 0,
-scx: u8 = 0,
-ly: u8 = 0,
-lyc: u8 = 0,
-bgp: Palette = @bitCast(@as(u8, 0)),
-obp0: Palette = @bitCast(@as(u8, 0)),
-obp1: Palette = @bitCast(@as(u8, 0)),
-wy: u8 = 0,
-wx: u8 = 0,
-temp_ready_to_render: bool = false,
+/// To be called at 4.194304 MHz.
+pub fn dot(self: *PPU) void {
+    if (self.lcdc.lcd_enable == 0) return;
+    // TODO trigger interrupts
+    self.stat.ly_lyc_eq = self.ly == self.lyc;
 
-// TODO This certainly isn't optimal, and once I find out why OAM scan (mode 2)
-// doesn't take 84 cycles I'll make the PPU commicate with memory via a Bus
-// like the CPU.
-oam: []u8,
-vram: []u8,
+    const sprite_height: u8 = if (self.lcdc.obj_size == 0) 8 else 16;
 
-dots_per_mode: usize = 0,
-scanline_pixel: u8 = 0,
-visible_sprites: BoundedArray(ObjectAttribute, 10) = .{},
+    switch (self.stat.mode) {
+        .oam_scan => {
+            self.dots_per_mode += 1;
+            if (self.dots_per_mode == 80) {
+                // TODO cycle-step
+                const oam: []ObjectAttribute = @ptrCast(@alignCast(self.oam));
+                for (oam) |oa| {
+                    if (oa.y_pos != 0 and self.ly + 16 >= oa.y_pos and
+                        self.ly + 16 < oa.y_pos + sprite_height and self.visible_sprites.len < 10)
+                    {
+                        self.visible_sprites.push(oa);
+                    }
+                }
 
-fetcher_state: FetchState = .fetch_tile,
-fetcher_index: u1 = 0,
-fetcher_buffer: u16 = 0,
-fetcher_tile_x: u8 = 0,
-fetcher_curr_tile: u16 = 0,
-fifo_discard_scroll: u8 = 0,
-fifo: Fifo = .{},
+                self.fifo_discard_scroll = self.scx % 8;
+                self.stat.mode = .draw;
+            }
+        },
+        .draw => {
+            self.dots_per_mode += 1;
 
-// TODO The PPU shouldn't own the display, of course
-display: [160 * 144]u32 = .{0x00} ** (160 * 144),
+            self.fifo_fetch();
+            if (self.fifo.len > 8) {
+                if (self.fifo_discard_scroll != 0) {
+                    _ = self.fifo_dequeue();
+                    self.fifo_discard_scroll -= 1;
+                } else {
+                    self.put_pixel(self.fifo_dequeue());
+                    self.scanline_pixel += 1;
+                }
+            }
+
+            if (self.scanline_pixel == 160) {
+                self.reset_scanline();
+                self.stat.mode = .hblank;
+            }
+        },
+        .hblank => {
+            self.dots_per_mode += 1;
+
+            if (self.dots_per_mode == 456) {
+                if (self.ly == 143) {
+                    self.stat.mode = .vblank;
+                    self.temp_ready_to_render = true;
+                } else {
+                    self.stat.mode = .oam_scan;
+                    self.ly += 1;
+                }
+                self.dots_per_mode = 0;
+            }
+        },
+        .vblank => {
+            self.temp_ready_to_render = false;
+
+            self.dots_per_mode += 1;
+
+            if (self.dots_per_mode % 456 == 0) {
+                self.ly += 1;
+            }
+
+            if (self.ly == 153) {
+                self.dots_per_mode = 0;
+                self.ly = 0;
+                self.stat.mode = .oam_scan;
+            }
+        },
+    }
+}
+
+fn read_vram(self: *const PPU, addr: u16) u8 {
+    return self.vram[addr - 0x8000];
+}
+
+/// This is not excusable for a language to require. I love Zig, but come on.
+fn add_as_signed(lhs: u16, rhs: u16) u16 {
+    const signed_rhs: i16 = @bitCast(rhs);
+    return lhs +% @as(u16, @bitCast(signed_rhs));
+}
 
 fn fifo_fetch(self: *PPU) void {
     switch (self.fetcher_state) {
@@ -281,91 +368,4 @@ fn inside_window(self: *PPU, x: u16) bool {
     _ = self;
     _ = x;
     return false;
-}
-
-/// To be called at 4.194304 MHz.
-pub fn dot(self: *PPU) void {
-    if (self.lcdc.lcd_enable == 0) return;
-    // TODO trigger interrupts
-    self.stat.ly_lyc_eq = self.ly == self.lyc;
-
-    const sprite_height: u8 = if (self.lcdc.obj_size == 0) 8 else 16;
-
-    switch (self.stat.mode) {
-        .oam_scan => {
-            self.dots_per_mode += 1;
-            if (self.dots_per_mode == 80) {
-                // TODO cycle-step
-                const oam: []ObjectAttribute = @ptrCast(@alignCast(self.oam));
-                for (oam) |oa| {
-                    if (oa.y_pos != 0 and self.ly + 16 >= oa.y_pos and
-                        self.ly + 16 < oa.y_pos + sprite_height and self.visible_sprites.len < 10)
-                    {
-                        self.visible_sprites.push(oa);
-                    }
-                }
-
-                self.fifo_discard_scroll = self.scx % 8;
-                self.stat.mode = .draw;
-            }
-        },
-        .draw => {
-            self.dots_per_mode += 1;
-
-            self.fifo_fetch();
-            if (self.fifo.len > 8) {
-                if (self.fifo_discard_scroll != 0) {
-                    _ = self.fifo_dequeue();
-                    self.fifo_discard_scroll -= 1;
-                } else {
-                    self.put_pixel(self.fifo_dequeue());
-                    self.scanline_pixel += 1;
-                }
-            }
-
-            if (self.scanline_pixel == 160) {
-                self.reset_scanline();
-                self.stat.mode = .hblank;
-            }
-        },
-        .hblank => {
-            self.dots_per_mode += 1;
-
-            if (self.dots_per_mode == 456) {
-                if (self.ly == 143) {
-                    self.stat.mode = .vblank;
-                    self.temp_ready_to_render = true;
-                } else {
-                    self.stat.mode = .oam_scan;
-                    self.ly += 1;
-                }
-                self.dots_per_mode = 0;
-            }
-        },
-        .vblank => {
-            self.temp_ready_to_render = false;
-
-            self.dots_per_mode += 1;
-
-            if (self.dots_per_mode % 456 == 0) {
-                self.ly += 1;
-            }
-
-            if (self.ly == 153) {
-                self.dots_per_mode = 0;
-                self.ly = 0;
-                self.stat.mode = .oam_scan;
-            }
-        },
-    }
-}
-
-fn read_vram(self: *const PPU, addr: u16) u8 {
-    return self.vram[addr - 0x8000];
-}
-
-/// This is not excusable for a language to require. I love Zig, but come on.
-fn add_as_signed(lhs: u16, rhs: u16) u16 {
-    const signed_rhs: i16 = @bitCast(rhs);
-    return lhs +% @as(u16, @bitCast(signed_rhs));
 }

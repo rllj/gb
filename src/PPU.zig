@@ -215,7 +215,6 @@ pub fn dot(self: *PPU, bus: *Pins) void {
         .draw => {
             self.dots_per_mode += 1;
 
-            self.fifo_fetch();
             if (self.fifo.len > 8) {
                 if (self.fifo_discard_scroll != 0) {
                     _ = self.fifo_dequeue();
@@ -225,6 +224,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                     self.scanline_pixel += 1;
                 }
             }
+            self.fifo_fetch();
 
             if (self.scanline_pixel == 160) {
                 self.reset_scanline();
@@ -260,7 +260,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
 
             self.dots_per_mode += 1;
 
-            if (self.ly == 153) {
+            if (self.ly == 154) {
                 self.dots_per_mode = 0;
                 self.ly = 0;
                 self.stat.mode = .oam_scan;
@@ -274,22 +274,12 @@ pub fn dot(self: *PPU, bus: *Pins) void {
     self.stat_line = stat_int;
 }
 
-fn read_vram(self: *const PPU, addr: u16) u8 {
-    return self.vram[addr - 0x8000];
-}
-
-/// This is not excusable for a language to require. I love Zig, but come on.
-fn add_as_signed(lhs: u16, rhs: u16) u16 {
-    const signed_rhs: i16 = @bitCast(rhs);
-    return lhs +% @as(u16, @bitCast(signed_rhs));
-}
-
 fn fifo_fetch(self: *PPU) void {
     switch (self.fetcher_state) {
         .fetch_tile => {
             if (self.advance_fetcher()) {
                 const x: u16 = (self.fetcher_tile_x + self.scx / 8) & 0x1F;
-                const y: u16 = (@as(u16, self.ly) + self.scy) / 8;
+                const y: u16 = (self.ly +% self.scy) / 8;
 
                 var tilemap_address: u16 = TILE_MAP_0_START;
                 if (self.lcdc.bg_tilemap_area == 1 and !self.inside_window(x)) {
@@ -358,6 +348,16 @@ fn fifo_fetch(self: *PPU) void {
     }
 }
 
+fn read_vram(self: *const PPU, addr: u16) u8 {
+    return self.vram[addr - 0x8000];
+}
+
+/// This is not excusable for a language to require. I love Zig, but come on.
+fn add_as_signed(lhs: u16, rhs: u16) u16 {
+    const signed_rhs: i16 = @bitCast(rhs);
+    return lhs +% @as(u16, @bitCast(signed_rhs));
+}
+
 fn fifo_enqueue(self: *PPU, row: u16) bool {
     if (self.fifo.len <= 8) {
         self.fifo.enqueue_row(row);
@@ -393,4 +393,35 @@ fn inside_window(self: *PPU, x: u16) bool {
     _ = self;
     _ = x;
     return false;
+}
+
+pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.mem.Allocator) ![]const u32 {
+    const tilemap_start = (if (tilemap == 0) TILE_MAP_0_START else TILE_MAP_1_START) - 0x8000;
+    const tilemap_end = tilemap_start + 1024;
+
+    const map = try allocator.alloc(u32, 256 * 256);
+    for (self.vram[tilemap_start..tilemap_end], 0..) |tile_idx, vert| {
+        const row_x = vert % 32;
+        const row_y = vert / 32;
+        const offset = TILE_DATA_START - 0x8000;
+        const from = offset + @as(usize, tile_idx) * 16;
+
+        for (0..8) |i| {
+            const low = self.vram[from + i * 2];
+            const high = self.vram[from + i * 2 + 1];
+
+            var colours: [8]u32 = undefined;
+            for (0..8) |shift| {
+                const s: u3 = @truncate(7 - shift);
+                const colour_idx: u2 = (@as(u2, @truncate(high >> s)) & 1) << 1 |
+                    (@as(u2, @truncate(low >> s)) & 1);
+                const colour: Colour = self.bgp.from_index(colour_idx);
+                colours[shift] = colour.rgba_8_8_8_8();
+            }
+
+            const dst_start = row_y * 8 * 256 + i * 256 + row_x * 8;
+            @memcpy(map[dst_start .. dst_start + 8], &colours);
+        }
+    }
+    return map;
 }

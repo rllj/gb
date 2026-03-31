@@ -3,3 +3,7 @@ Currently passes the following of [Blargg's test roms](https://github.com/retrio
 * cpu_insts
 * instr_timing
 * mem_timing
+
+----
+
+Developed with Zig 0.16-master.

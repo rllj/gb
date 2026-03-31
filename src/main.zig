@@ -22,7 +22,16 @@ pub fn main(init: std.process.Init) !void {
     const texture: sdl3.render.Texture = try renderer.createTexture(.packed_rgba_8_8_8_8, .streaming, 160, 144);
     try texture.setScaleMode(.nearest);
 
-    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/01-read_timing(1).gb"));
+    const window2, const renderer2 = try sdl3.render.Renderer.initWithWindow("Tilemap 0", 512, 512, .{});
+    defer window2.deinit();
+    defer renderer2.deinit();
+
+    const texture_debug: sdl3.render.Texture = try renderer2.createTexture(.packed_rgba_8_8_8_8, .streaming, 256, 256);
+    try texture_debug.setScaleMode(.nearest);
+
+    try window.raise();
+
+    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/dmg-acid2.gb"));
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
@@ -36,13 +45,25 @@ pub fn main(init: std.process.Init) !void {
 
         _ = fps_capper.delay();
 
-        const data, _ = try texture.lock(null);
-        @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
-        texture.unlock();
+        {
+            const data, _ = try texture.lock(null);
+            @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
+            texture.unlock();
 
-        try renderer.clear();
-        try renderer.renderTexture(texture, null, null);
-        try renderer.present();
+            try renderer.clear();
+            try renderer.renderTexture(texture, null, null);
+            try renderer.present();
+        }
+
+        const debug_data = try gb.ppu.debug_generate_tilemap(0, init.gpa);
+        defer init.gpa.free(debug_data);
+        const data, _ = try texture_debug.lock(null);
+        @memcpy(data, std.mem.sliceAsBytes(debug_data));
+        texture_debug.unlock();
+
+        try renderer2.clear();
+        try renderer2.renderTexture(texture_debug, null, null);
+        try renderer2.present();
 
         while (sdl3.events.poll()) |event|
             switch (event) {

@@ -21,7 +21,6 @@ timer_events: Timer.TimerEvents,
 oam_transfer_cycle: u8,
 
 io: std.Io,
-serial_input: std.ArrayList(u8),
 
 pub const JOYP = 0xFF00;
 pub const SERIAL_TRANSFER = 0xFF01;
@@ -35,22 +34,17 @@ pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
     @memset(memory, 0x00);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
 
-    const fifo = try allocator.alloc(u2, 16);
-
     memory[JOYP] = 0xFF;
 
-    const serial_input: std.ArrayList(u8) = try .initCapacity(allocator, 4096);
     return .{
         .sm83 = .{},
         .ppu = .{
             .oam = memory[0xFE00..0xFEA0],
             .vram = memory[0x8000..0xA000],
-            .fifo = .initBuffer(fifo),
         },
         .memory = memory,
         .bus = .{},
         .io = io,
-        .serial_input = serial_input,
         .timer = @ptrCast(memory[Timer.SYSCLK_LO .. Timer.TAC + 1]),
         .timer_events = .{},
         .oam_transfer_cycle = 0,
@@ -59,8 +53,6 @@ pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
 
 pub fn deinit(self: *GB, allocator: Allocator) void {
     allocator.free(self.memory);
-    allocator.free(self.ppu.fifo.buffer);
-    self.serial_input.deinit(allocator);
 }
 
 /// To be called at 4.194304 MHz.
@@ -164,14 +156,6 @@ fn write_if(_: *GB, bus: Pins) Pins {
 
 fn write_io(self: *GB, addr: u16, data: u8) void {
     if (self.oam_transfer_cycle != 0) return;
-    if (addr == SERIAL_TRANSFER) {
-        std.debug.print("{c}", .{data});
-        self.serial_input.appendBounded(data) catch {
-            self.serial_input.clearRetainingCapacity();
-            self.serial_input.appendAssumeCapacity(data);
-            logger.warn("Ran out of serial storage, overwriting old data.", .{});
-        }; // Stupid, but works for now
-    }
     switch (addr) {
         Timer.DIV => {
             self.memory[Timer.DIV] = 0;

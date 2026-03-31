@@ -22,34 +22,30 @@ pub fn main(init: std.process.Init) !void {
     const texture: sdl3.render.Texture = try renderer.createTexture(.packed_rgba_8_8_8_8, .streaming, 160, 144);
     try texture.setScaleMode(.nearest);
 
-    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/tetris.gb"));
+    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/01-special.gb"));
     defer gb.deinit(init.gpa);
-
-    {
-        const data, _ = try texture.lock(null);
-        @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
-        texture.unlock();
-    }
 
     var quit = false;
     while (!quit) {
+        while (!gb.ppu.temp_ready_to_render) {
+            gb.tick();
+        }
+
+        gb.ppu.temp_ready_to_render = false;
+
         while (sdl3.events.poll()) |event|
             switch (event) {
                 .quit => quit = true,
                 .terminating => quit = true,
                 else => {},
             };
-        if (gb.ppu.ly == 144) {
-            const data, _ = try texture.lock(null);
-            @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
-            texture.unlock();
+        const data, _ = try texture.lock(null);
+        @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
+        texture.unlock();
 
-            try renderer.clear();
-            try renderer.renderTexture(texture, null, null);
-            try renderer.present();
-        }
-
-        gb.tick();
+        try renderer.clear();
+        try renderer.renderTexture(texture, null, null);
+        try renderer.present();
     }
 }
 

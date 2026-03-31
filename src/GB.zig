@@ -96,7 +96,7 @@ fn tcycle(self: *GB) void {
 fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
     if (bus.mreq == 1 and bus.wr == 1) {
         switch (bus.abus) {
-            0x0000...0x7FFF => std.debug.panic("Attempt to write to ROM at 0x{X:0>4}", .{bus.abus}),
+            0x0000...0x7FFF => std.debug.print("Attempt to write to ROM at 0x{X:0>4}, instr: 0o{o}\n", .{ bus.abus, self.sm83.registers.ir }),
             0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
             0xA000...0xBFFF => self.write_ram(bus.abus, bus.dbus),
             0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),

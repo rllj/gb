@@ -1,4 +1,5 @@
-const assert = @import("std").debug.assert;
+const std = @import("std");
+const assert = std.debug.assert;
 
 const BoundedArray = @import("common.zig").BoundedArray;
 
@@ -27,23 +28,6 @@ pub const TILE_MAP_1_START = 0x9C00;
 pub const TILE_MAP_1_END = 0x9FFF;
 
 pub const OAM_START = 0xFE00;
-
-const Tile = struct {
-    rows: [8]Row,
-
-    const Row = packed struct(u16) {
-        ls_bits: u8,
-        ms_bits: u8,
-    };
-
-    pub fn get_pixel(self: Tile, x: u3, y: u3) u2 {
-        const ls_bit: u1 = @truncate(self.rows[y].ls_bits >> x);
-        const ms_bit: u1 = @truncate(self.rows[y].ms_bits >> x);
-
-        const pixel: u2 = @as(u2, ms_bit) << 1 | ls_bit;
-        return pixel;
-    }
-};
 
 const ObjectAttribute = packed struct(u32) {
     y_pos: u8,
@@ -97,141 +81,12 @@ const Colour = enum(u2) {
     black = 3,
 };
 
-const Pixel = struct {
-    colour_index: u2,
+const FetchState = enum {
+    fetch_tile,
+    fetch_low,
+    fetch_high,
+    idle,
 };
-
-const PixelFifo = struct {
-    pixels: u32 = 0,
-    count: u8 = 0,
-
-    pub fn enqueue_row(self: *PixelFifo, pixels: u16) void {
-        assert(self.count == 0 or self.count == 8);
-        if (self.count == 0) {
-            self.pixels = pixels;
-        } else {
-            self.pixels &= 0xFFFF0000;
-            self.pixels |= pixels;
-        }
-        self.count += 8;
-    }
-
-    pub fn dequeue(self: *PixelFifo) Pixel {
-        assert(self.count > 8);
-        const pixel: u2 = @truncate(self.pixels >> 30);
-        self.pixels <<= 2;
-        self.count -= 1;
-        return .{ .colour_index = pixel };
-    }
-};
-
-const Fetcher = struct {
-    state: State = .fetch_tile,
-    tilemap_idx: u16 = 0,
-    fetched: u16 = 0,
-    is_filled: bool = false,
-    cycle: u1 = 0,
-    x: u5 = 0,
-
-    inline fn advance_cycle(self: *Fetcher) bool {
-        defer self.cycle ^= 1;
-        return self.cycle == 1;
-    }
-
-    pub fn read_pixels(self: *Fetcher) u16 {
-        self.is_filled = false;
-        return self.fetched;
-    }
-
-    const State = enum {
-        fetch_tile,
-        fetch_data_low,
-        fetch_data_high,
-        sleep,
-    };
-
-    const Tilemap = enum(u16) { tilemap0 = 0x9800, timemap1 = 0x9C00 };
-};
-
-pub fn fetcher_tick(self: *PPU) void {
-    state: switch (self.fetcher.state) {
-        .fetch_tile => {
-            if (self.fetcher.advance_cycle()) {
-                const tilemap_base = self.get_fetcher_tilemap();
-                self.fetcher.tilemap_idx = tilemap_base + self.fetcher_x() + (self.fetcher_y() / 8) * 32;
-
-                self.fetcher.state = .fetch_data_low;
-            }
-        },
-        .fetch_data_low => {
-            if (self.fetcher.advance_cycle()) {
-                const tile_offset = self.read_vram(self.fetcher.tilemap_idx);
-                const tile_idx: u16 = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => TILE_DATA_START + tile_offset,
-                    1 => add_as_signed(TILE_DATA_MIDDLE, tile_offset),
-                };
-                const tile_data_low = self.read_vram(tile_idx + self.fetcher_y() % 8);
-
-                for (0..8) |i| {
-                    const bit: u16 = (tile_data_low >> @truncate(i)) & 1;
-                    self.fetcher.fetched |= bit << @truncate(i * 2);
-                }
-
-                self.fetcher.state = .fetch_data_high;
-            }
-        },
-        .fetch_data_high => {
-            if (self.fetcher.advance_cycle()) {
-                const tile_offset = self.read_vram(self.fetcher.tilemap_idx);
-                const tile_idx = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => TILE_DATA_START + tile_offset,
-                    1 => add_as_signed(TILE_DATA_MIDDLE, tile_offset),
-                };
-                const tile_data_high = self.read_vram(tile_idx + self.fetcher_y() % 8 + 1);
-
-                for (0..8) |i| {
-                    const bit: u16 = (tile_data_high >> @truncate(i)) & 1;
-                    self.fetcher.fetched |= bit << @truncate(i * 2 + 1);
-                }
-
-                self.fetcher.x += 1;
-                self.fetcher.state = .sleep;
-                self.fetcher.is_filled = true;
-            }
-        },
-        .sleep => {
-            if (!self.fetcher.is_filled) {
-                self.fetcher.state = .fetch_tile;
-                continue :state .fetch_tile;
-            }
-        },
-    }
-}
-
-fn get_fetcher_tilemap(self: *const PPU) u16 {
-    if (self.lcdc.bg_tilemap_area == 1 and !self.is_in_window(self.fetcher_x())) {
-        return 0x9C00;
-    }
-    if (self.lcdc.window_tilemap_area == 1 and self.is_in_window(self.fetcher_x())) {
-        return 0x9C00;
-    }
-    return 0x9800;
-}
-
-fn fetcher_x(self: *const PPU) u8 {
-    return (self.scx / 8 + self.fetcher.x) & 0x1F;
-}
-
-fn fetcher_y(self: *const PPU) u8 {
-    return self.ly +% self.scy;
-}
-
-fn is_in_window(self: *const PPU, x: u8) bool {
-    _ = self;
-    _ = x;
-    // TODO
-    return false;
-}
 
 lcdc: LCDControl = .{},
 stat: Status = @bitCast(@as(u8, 0)),
@@ -250,24 +105,115 @@ oam: []u8,
 vram: []u8,
 
 dots_per_mode: usize = 0,
-current_pixel: u8 = 0,
+scanline_pixel: u8 = 0,
 visible_sprites: BoundedArray(ObjectAttribute, 10) = .{},
-fifo: PixelFifo = .{},
-fetcher: Fetcher = .{},
 
-display: [160 * 144]u8 = .{0xFF} ** (160 * 144),
+fetcher_state: FetchState = .fetch_tile,
+fetcher_index: u1 = 0,
+fetcher_buffer: [8]u2 = .{0} ** 8,
+fetcher_tile_x: u8 = 0,
+fetcher_curr_tile: u8 = 0,
+// TODO shift register data structure instead
+fifo: std.Deque(u2),
 
-fn put_pixel(self: *PPU, pixel: Pixel) void {
-    const colour: u8 = switch (pixel.colour_index) {
-        0b00 => 0x00,
-        0b01 => 0x10,
-        0b10 => 0x80,
-        0b11 => 0xFF,
+// TODO The PPU shouldn't own the display, of course
+display: [160 * 144]u32 = .{0x00} ** (160 * 144),
+
+fn fifo_fetch(self: *PPU) void {
+    switch (self.fetcher_state) {
+        .fetch_tile => {
+            if (self.advance_fetcher()) {
+                const x: u16 = @truncate(self.fetcher_tile_x + self.scx / 8);
+                const y: u16 = @truncate((self.ly + self.scy) / 8);
+
+                // TODO tilemap 2
+
+                const idx = x + y * 32;
+                self.fetcher_curr_tile = self.read_vram(TILE_MAP_0_START + idx);
+
+                self.fetcher_state = .fetch_low;
+            }
+        },
+        .fetch_low => {
+            if (self.advance_fetcher()) {
+                const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
+                    0 => TILE_DATA_START + self.fetcher_curr_tile,
+                    1 => add_as_signed(TILE_DATA_MIDDLE, self.fetcher_curr_tile),
+                };
+                const y: u16 = @truncate((self.ly + self.scy) / 8);
+
+                const tile_data_idx = tile_data_base + y * 2;
+                const tile_data = self.read_vram(tile_data_idx);
+
+                for (&self.fetcher_buffer, 0..) |*pixel, i| {
+                    const bit: u2 = @truncate((tile_data >> @truncate(i)) & 1);
+                    pixel.* = bit;
+                }
+
+                self.fetcher_state = .fetch_high;
+            }
+        },
+        .fetch_high => {
+            if (self.advance_fetcher()) {
+                const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
+                    0 => TILE_DATA_START + self.fetcher_curr_tile,
+                    1 => add_as_signed(TILE_DATA_MIDDLE, self.fetcher_curr_tile),
+                };
+                const y: u16 = @truncate((self.ly + self.scy) / 8);
+
+                const tile_data_idx = tile_data_base + y * 2 + 1;
+                const tile_data = self.read_vram(tile_data_idx);
+
+                for (&self.fetcher_buffer, 0..) |*pixel, i| {
+                    const bit: u2 = @truncate((tile_data >> @truncate(i)) & 1);
+                    pixel.* |= bit << 1;
+                }
+
+                self.fetcher_state = .idle;
+            }
+        },
+        .idle => {
+            if (self.fifo_enqueue(self.fetcher_buffer)) {
+                self.fetcher_state = .fetch_tile;
+            }
+        },
+    }
+}
+
+fn fifo_enqueue(self: *PPU, row: [8]u2) bool {
+    if (self.fifo.len <= 8) {
+        self.fifo.pushFrontSliceAssumeCapacity(&row);
+        return true;
+    }
+    return false;
+}
+
+fn fifo_dequeue(self: *PPU) u2 {
+    return self.fifo.popBack().?;
+}
+
+fn advance_fetcher(self: *PPU) bool {
+    defer self.fetcher_index ^= 1;
+    return self.fetcher_index == 1;
+}
+
+fn put_pixel(self: *PPU, pixel: u2) void {
+    const pixel_pos = @as(u16, self.scanline_pixel) + @as(u16, self.ly) * 160;
+    self.display[pixel_pos] = switch (pixel) {
+        0 => 0x0F380FFF,
+        1 => 0x306230FF,
+        2 => 0x8BAC0FFF,
+        3 => 0x9BBC0FFF,
     };
-    const x: u16 = self.current_pixel;
-    const y: u16 = self.ly;
-    const idx = x + y * 160;
-    self.display[idx] = colour;
+}
+
+fn reset_scanline(self: *PPU) void {
+    if (self.scanline_pixel != 160) {
+        std.debug.panic("Expected 160, got {}", .{self.scanline_pixel});
+    }
+    self.scanline_pixel = 0;
+    self.fetcher_tile_x = 0;
+    self.fifo = .{ .buffer = self.fifo.buffer, .head = 0, .len = 0 };
 }
 
 /// To be called at 4.194304 MHz.
@@ -278,19 +224,8 @@ pub fn dot(self: *PPU) void {
 
     const sprite_height: u8 = if (self.lcdc.obj_size == 0) 8 else 16;
 
-    const background_left = self.scx;
-    const background_top = self.scy;
-    const background_right = self.scx +% 159;
-    const background_bottom = self.scy +% 143;
-
-    _ = background_left;
-    _ = background_top;
-    _ = background_right;
-    _ = background_bottom;
-
     switch (self.stat.mode) {
         .oam_scan => {
-            self.current_pixel = 0;
             self.dots_per_mode += 1;
             if (self.dots_per_mode == 80) {
                 // TODO cycle-step
@@ -309,48 +244,54 @@ pub fn dot(self: *PPU) void {
         .draw => {
             self.dots_per_mode += 1;
 
-            self.fetcher_tick();
-            if (self.fifo.count > 8) {
-                self.put_pixel(self.fifo.dequeue());
-                self.current_pixel += 1;
-            } else if (self.fetcher.state == .sleep) {
-                self.fifo.enqueue_row(self.fetcher.read_pixels());
+            self.fifo_fetch();
+            if (self.fifo.len > 8) {
+                self.put_pixel(self.fifo_dequeue());
+                self.scanline_pixel += 1;
             }
 
-            // Perform two tile fetches.
-            // take SCX % 8 dots to discard the same amount from the first tile.
-            // discard the second.
+            // Fetcher: get tile (2 dots)
+            // Fetcher: get low (2 dots)
+            // Fetcher: get high, put row in fifo (2 dots)
+            // repeat steps above once
+            // Fifo: put one pixel, Fetcher: get tile (1 dot)
+            // Fifo: put one pixel, Fetcher: get tile (1 dot)
+            // Fifo: put one pixel, Fetcher: get low (1 dot)
+            // Fifo: put one pixel, Fetcher: get low (1 dot)
+            // Fifo: put one pixel, Fetcher: get high (1 dot)
+            // Fifo: put one pixel, Fetcher: get high (1 dot)
+            // Fifo: put one pixel, Fetcher: idle (1 dot)
+            // Fifo: put one pixel, Fetcher: put row in fifo (1 dot)
 
             // Alternatively: self.current_pixel == 160
-            if (self.fetcher.x == 20) {
+            if (self.scanline_pixel == 160) {
                 self.stat.mode = .hblank;
+                self.reset_scanline();
             }
         },
         .hblank => {
             self.dots_per_mode += 1;
-            self.current_pixel = 0;
 
             if (self.dots_per_mode == 456) {
-                self.ly += 1;
-                self.stat.mode = if (self.ly == 144) .vblank else .oam_scan;
+                if (self.ly == 143) {
+                    self.stat.mode = .vblank;
+                } else {
+                    self.stat.mode = .oam_scan;
+                    self.ly += 1;
+                }
                 self.dots_per_mode = 0;
             }
         },
         .vblank => {
             self.dots_per_mode += 1;
+            self.ly += 1;
 
-            if (self.dots_per_mode == 4560 + 456) {
+            if (self.ly == 153) {
                 // We need to clear the visible sprites buffer before drawing the next line;
                 self.visible_sprites = .{};
-                self.fetcher = .{};
                 self.dots_per_mode = 0;
                 self.ly = 0;
-
-                if (self.ly < 144) {
-                    self.stat.mode = .oam_scan;
-                } else {
-                    self.stat.mode = .hblank;
-                }
+                self.stat.mode = .oam_scan;
             }
         },
     }

@@ -35,12 +35,18 @@ pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
     @memset(memory, 0x00);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
 
+    const fifo = try allocator.alloc(u2, 16);
+
     memory[JOYP] = 0xFF;
 
     const serial_input: std.ArrayList(u8) = try .initCapacity(allocator, 4096);
     return .{
         .sm83 = .{},
-        .ppu = .{ .oam = memory[0xFE00..0xFEA0], .vram = memory[0x8000..0xA000] },
+        .ppu = .{
+            .oam = memory[0xFE00..0xFEA0],
+            .vram = memory[0x8000..0xA000],
+            .fifo = .initBuffer(fifo),
+        },
         .memory = memory,
         .bus = .{},
         .io = io,
@@ -53,19 +59,21 @@ pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
 
 pub fn deinit(self: *GB, allocator: Allocator) void {
     allocator.free(self.memory);
+    allocator.free(self.ppu.fifo.buffer);
+    self.serial_input.deinit(allocator);
 }
 
 /// To be called at 4.194304 MHz.
-pub fn tick(self: *GB) !void {
+pub fn tick(self: *GB) void {
     try self.tcycle();
     if (self.cycle % 4 == 0) {
-        try self.mcycle();
+        self.mcycle();
     }
 
     self.cycle += 1;
 }
 
-fn mcycle(self: *GB) !void {
+fn mcycle(self: *GB) void {
     const prev_timer = self.timer_from_mmio();
 
     const has_pending_interrupt = self.sm83.ie.to_byte() & self.bus.int.to_byte() == 0;

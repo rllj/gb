@@ -260,7 +260,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
 
             self.dots_per_mode += 1;
 
-            if (self.ly == 154) {
+            if (self.ly == 153) {
                 self.dots_per_mode = 0;
                 self.ly = 0;
                 self.stat.mode = .oam_scan;
@@ -352,7 +352,6 @@ fn read_vram(self: *const PPU, addr: u16) u8 {
     return self.vram[addr - 0x8000];
 }
 
-/// This is not excusable for a language to require. I love Zig, but come on.
 fn add_as_signed(lhs: u16, rhs: u16) u16 {
     const signed_rhs: i16 = @bitCast(rhs);
     return lhs +% @as(u16, @bitCast(signed_rhs));

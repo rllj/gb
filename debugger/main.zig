@@ -27,7 +27,10 @@ pub fn main(init: std.process.Init) !void {
     defer stdout.close(init.io);
     var stdout_writer = stdout.writer(init.io, &.{});
 
-    var gb: GB = try .init(arena, @embedFile("roms/tetris.gb"));
+    var gb: GB = try .init(arena, @embedFile("roms/06-ld r,r.gb"));
+    while (gb.sm83.registers.pc < 0x100) {
+        gb.tick_inst();
+    }
     try gb.debug_log(&stdout_writer.interface);
 
     const stdin = Io.File.stdin();
@@ -46,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
                     .@"continue" => {},
                     .breakpoint => breakpoint = try std.fmt.parseInt(u16, arg_or_null.?, 16),
                     .step => {
-                        gb.tick_mcycle();
+                        gb.tick_inst();
                         try gb.debug_log(&stdout_writer.interface);
                     },
                 }

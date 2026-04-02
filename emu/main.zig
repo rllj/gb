@@ -8,6 +8,7 @@ const GB = @import("GB").GB;
 const SCREEN_WIDTH = 640;
 const SCREEN_HEIGHT = 576;
 
+// TODO clean up
 pub fn main(init: std.process.Init) !void {
     defer sdl3.shutdown();
 
@@ -26,20 +27,29 @@ pub fn main(init: std.process.Init) !void {
     defer window2.deinit();
     defer renderer2.deinit();
 
+    const window3, const renderer3 = try sdl3.render.Renderer.initWithWindow("Tilemap 1", 512, 512, .{});
+    defer window3.deinit();
+    defer renderer3.deinit();
+
     const texture_debug: sdl3.render.Texture = try renderer2.createTexture(.packed_rgba_8_8_8_8, .streaming, 256, 256);
     try texture_debug.setScaleMode(.nearest);
 
+    const texture_debug2: sdl3.render.Texture = try renderer3.createTexture(.packed_rgba_8_8_8_8, .streaming, 256, 256);
+    try texture_debug2.setScaleMode(.nearest);
+
     try window.raise();
 
-    var gb: GB = try .init(init.gpa, @embedFile("roms/interrupt_time.gb"));
+    var gb: GB = try .init(init.gpa, @embedFile("roms/tetris.gb"));
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
 
     var quit = false;
     while (!quit) {
+        var cycle: usize = 0;
         while (!gb.ppu.temp_ready_to_render) {
-            gb.tick_tcycle();
+            gb.tick_mcycle();
+            cycle += 1;
         }
         gb.ppu.temp_ready_to_render = false;
 
@@ -55,20 +65,40 @@ pub fn main(init: std.process.Init) !void {
             try renderer.present();
         }
 
-        const debug_data = try gb.ppu.debug_generate_tilemap(0, init.gpa);
-        defer init.gpa.free(debug_data);
-        const data, _ = try texture_debug.lock(null);
-        @memcpy(data, std.mem.sliceAsBytes(debug_data));
-        texture_debug.unlock();
+        {
+            const debug_data = try gb.ppu.debug_generate_tilemap(0, init.gpa);
+            defer init.gpa.free(debug_data);
+            const data, _ = try texture_debug.lock(null);
+            @memcpy(data, std.mem.sliceAsBytes(debug_data));
+            texture_debug.unlock();
 
-        try renderer2.clear();
-        try renderer2.renderTexture(texture_debug, null, null);
-        try renderer2.present();
+            try renderer2.clear();
+            try renderer2.renderTexture(texture_debug, null, null);
+            try renderer2.present();
+        }
+
+        {
+            const debug_data = try gb.ppu.debug_generate_tilemap(1, init.gpa);
+            defer init.gpa.free(debug_data);
+            const data, _ = try texture_debug2.lock(null);
+            @memcpy(data, std.mem.sliceAsBytes(debug_data));
+            texture_debug2.unlock();
+
+            try renderer3.clear();
+            try renderer3.renderTexture(texture_debug2, null, null);
+            try renderer3.present();
+        }
 
         while (sdl3.events.poll()) |event|
             switch (event) {
                 .quit => quit = true,
                 .terminating => quit = true,
+                .key_down => {
+                    gb.memory[GB.JOYP] = 0x30;
+                },
+                .key_up => {
+                    gb.memory[GB.JOYP] = 0x3F;
+                },
                 else => {},
             };
     }

@@ -138,24 +138,15 @@ const Registers = struct {
 };
 
 pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
-    var bus = input_bus;
+    var bus = input_bus.set(.{ .m1 = 0, .wr = 0, .rd = 0, .mreq = 0 });
 
     if (input_bus.halt == 1) {
-        bus = cpu.service_interrupts(input_bus) orelse return bus;
+        bus = cpu.service_interrupts(input_bus) orelse return input_bus;
     }
 
     if (cpu.cycle == 0) {
         cpu.registers.ir = bus.dbus;
-        cpu.registers.pc +%= 1;
     }
-
-    bus = bus.set(.{
-        .rd = 0,
-        .wr = 0,
-        .mreq = 0,
-        .m1 = 0,
-        .abus = 0,
-    });
 
     if (cpu.ei_counter > 0) {
         cpu.ei_counter -= 1;
@@ -286,11 +277,8 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         // HALT
         inst_state(0o166, 0) => {
             bus.halt = 1;
-            cpu.cycle += 1;
-            return bus; // Interrupts are not serviced on the cycle HALT is executed
-        },
-        inst_state(0o166, 1) => {
             bus = cpu.fetch_and_decode(bus);
+            cpu.registers.pc -%= 1;
         },
 
         // LD (BC), A
@@ -1264,14 +1252,16 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             bus = cpu.fetch_and_decode_extended(bus);
         },
 
+        // TODO not sure how accurate this is
+        // NOP before ISR https://gist.github.com/SonoSooS/c0055300670d678b5ae8433e20bea595#halt
         inst_state(Interrupts.vblank, 0),
         inst_state(Interrupts.status, 0),
         inst_state(Interrupts.timer, 0),
         inst_state(Interrupts.serial, 0),
         inst_state(Interrupts.joypad, 0),
         => {
-            cpu.registers.pc -= 1;
             cpu.cycle += 1;
+            cpu.registers.pc += 1;
         },
         inst_state(Interrupts.vblank, 1),
         inst_state(Interrupts.status, 1),
@@ -1279,7 +1269,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(Interrupts.serial, 1),
         inst_state(Interrupts.joypad, 1),
         => {
-            cpu.registers.sp -%= 1;
+            cpu.registers.pc -= 1;
             cpu.cycle += 1;
         },
         inst_state(Interrupts.vblank, 2),
@@ -1288,15 +1278,24 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(Interrupts.serial, 2),
         inst_state(Interrupts.joypad, 2),
         => {
-            bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
             cpu.registers.sp -%= 1;
             cpu.cycle += 1;
         },
-        inline inst_state(Interrupts.vblank, 3),
+        inst_state(Interrupts.vblank, 3),
         inst_state(Interrupts.status, 3),
         inst_state(Interrupts.timer, 3),
         inst_state(Interrupts.serial, 3),
         inst_state(Interrupts.joypad, 3),
+        => {
+            bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
+            cpu.registers.sp -%= 1;
+            cpu.cycle += 1;
+        },
+        inline inst_state(Interrupts.vblank, 4),
+        inst_state(Interrupts.status, 4),
+        inst_state(Interrupts.timer, 4),
+        inst_state(Interrupts.serial, 4),
+        inst_state(Interrupts.joypad, 4),
         => |interrupt| {
             const irq_addr: u16 = comptime switch (interrupt & 0xFF) {
                 Interrupts.vblank => 0x0040,
@@ -1311,11 +1310,11 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
             cpu.registers.pc = irq_addr;
             cpu.cycle += 1;
         },
-        inst_state(Interrupts.vblank, 4),
-        inst_state(Interrupts.status, 4),
-        inst_state(Interrupts.timer, 4),
-        inst_state(Interrupts.serial, 4),
-        inst_state(Interrupts.joypad, 4),
+        inst_state(Interrupts.vblank, 5),
+        inst_state(Interrupts.status, 5),
+        inst_state(Interrupts.timer, 5),
+        inst_state(Interrupts.serial, 5),
+        inst_state(Interrupts.joypad, 5),
         => {
             bus = cpu.fetch_and_decode(bus);
         },
@@ -1505,7 +1504,8 @@ fn mem_write(bus: Pins, addr: u16, data: u8) Pins {
 /// Fetches the next instruction opcode, checks for interrupts, and resets the cycle counter.
 fn fetch_and_decode(cpu: *SM83, bus: Pins) Pins {
     cpu.cycle = 0;
-    return cpu.service_interrupts(bus) orelse bus.set(.{
+    defer cpu.registers.pc +%= 1;
+    return bus.set(.{
         .abus = cpu.registers.pc,
         .mreq = 1,
         .rd = 1,
@@ -1542,6 +1542,7 @@ fn service_interrupts(cpu: *SM83, input_bus: Pins) ?Pins {
 
 fn fetch_and_decode_extended(cpu: *SM83, bus: Pins) Pins {
     cpu.cycle = 0;
+    defer cpu.registers.pc +%= 1;
     return bus.set(.{
         .abus = cpu.registers.pc,
         .mreq = 1,

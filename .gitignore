@@ -8,5 +8,5 @@ zig-pkg/
 .direnv/
 logfile
 gameboy-doctor
-src/roms/
+**/roms/
 TODO.md

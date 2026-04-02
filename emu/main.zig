@@ -3,7 +3,7 @@ const allocator = std.heap.page_allocator;
 
 const sdl3 = @import("sdl3");
 
-const GB = @import("GB.zig");
+const GB = @import("GB").GB;
 
 const SCREEN_WIDTH = 640;
 const SCREEN_HEIGHT = 576;
@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
 
     try window.raise();
 
-    var gb: GB = try .init(init.gpa, init.io, @embedFile("roms/dmg-acid2.gb"));
+    var gb: GB = try .init(init.gpa, @embedFile("roms/interrupt_time.gb"));
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
@@ -39,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     var quit = false;
     while (!quit) {
         while (!gb.ppu.temp_ready_to_render) {
-            gb.tick();
+            gb.tick_tcycle();
         }
         gb.ppu.temp_ready_to_render = false;
 

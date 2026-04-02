@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const print = std.debug.print;
 
 const SM83 = @This();
 
@@ -76,15 +75,15 @@ pub const IRMask = packed struct(u8) {
 };
 
 // Cheat a little by using unused instruction opcodes to handle interrupts.
-const Interrupts = struct {
-    const vblank = 0o323;
-    const status = 0o333;
-    const timer = 0o343;
-    const serial = 0o353;
-    const joypad = 0o344;
+pub const Interrupts = struct {
+    pub const vblank = 0o323;
+    pub const status = 0o333;
+    pub const timer = 0o343;
+    pub const serial = 0o353;
+    pub const joypad = 0o344;
 };
 
-const Registers = packed struct {
+const Registers = struct {
     const Flags = packed struct {
         unused: u4 = 0,
         c: bool = false,
@@ -138,10 +137,12 @@ const Registers = packed struct {
     }
 };
 
-const State = struct { opcode: u8, cycle: u8 };
-
 pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
     var bus = input_bus;
+
+    if (input_bus.halt == 1) {
+        bus = cpu.service_interrupts(input_bus) orelse return bus;
+    }
 
     if (cpu.cycle == 0) {
         cpu.registers.ir = bus.dbus;
@@ -154,7 +155,6 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         .mreq = 0,
         .m1 = 0,
         .abus = 0,
-        .halt = 0,
     });
 
     if (cpu.ei_counter > 0) {
@@ -846,7 +846,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0xE5, 0),
         inst_state(0xF5, 0),
         => {
-            cpu.registers.sp -= 1;
+            cpu.registers.sp -%= 1;
             cpu.cycle += 1;
         },
         inst_state(0xC5, 1),
@@ -856,7 +856,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         => {
             cpu.setwz(cpu.reg_decode2(@truncate(cpu.registers.ir >> 4)));
             bus = mem_write(bus, cpu.registers.sp, cpu.w);
-            cpu.registers.sp -= 1;
+            cpu.registers.sp -%= 1;
             cpu.cycle += 1;
         },
         inst_state(0xC5, 2),
@@ -882,7 +882,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0xF1, 0),
         => {
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.cycle += 1;
         },
         inst_state(0xC1, 1),
@@ -892,7 +892,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         => {
             cpu.z = bus.dbus;
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.cycle += 1;
         },
         inst_state(0xC1, 2),
@@ -1145,7 +1145,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o330, 1),
         => {
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.cycle += 1;
         },
         inst_state(0o300, 2),
@@ -1155,7 +1155,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         => {
             cpu.z = bus.dbus;
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.cycle += 1;
         },
         inst_state(0o300, 3),
@@ -1178,13 +1178,13 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         // RETI
         inst_state(0xD9, 0) => {
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.cycle += 1;
         },
         inst_state(0xD9, 1) => {
             cpu.z = bus.dbus;
             bus = mem_read(bus, cpu.registers.sp);
-            cpu.registers.sp += 1;
+            cpu.registers.sp +%= 1;
             cpu.cycle += 1;
         },
         inst_state(0xD9, 2) => {
@@ -1207,7 +1207,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(0o367, 0),
         inst_state(0o377, 0),
         => {
-            cpu.registers.sp -= 1;
+            cpu.registers.sp -%= 1;
             cpu.cycle += 1;
         },
         inst_state(0o307, 1),
@@ -1279,7 +1279,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(Interrupts.serial, 1),
         inst_state(Interrupts.joypad, 1),
         => {
-            cpu.registers.sp -= 1;
+            cpu.registers.sp -%= 1;
             cpu.cycle += 1;
         },
         inst_state(Interrupts.vblank, 2),
@@ -1289,7 +1289,7 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         inst_state(Interrupts.joypad, 2),
         => {
             bus = mem_write(bus, cpu.registers.sp, msb(cpu.registers.pc));
-            cpu.registers.sp -= 1;
+            cpu.registers.sp -%= 1;
             cpu.cycle += 1;
         },
         inline inst_state(Interrupts.vblank, 3),
@@ -1321,29 +1321,6 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
         },
 
         else => unreachable,
-    }
-
-    if (cpu.ime and cpu.cycle == 0) {
-        inline for (@typeInfo(IRMask).@"struct".fields) |struct_field| {
-            const name = struct_field.name;
-            if (comptime std.mem.eql(u8, name, "unused")) continue;
-            const if_field = @field(bus.int, name);
-            const ie_field = @field(cpu.ie, name);
-            const interrupt = @field(Interrupts, name);
-            if (if_field & ie_field == 1) {
-                @field(bus.int, name) = 0;
-                // @field(bus.inta, name) = 1; TODO This might be useless
-                cpu.ime = false;
-                bus = bus.set(.{
-                    .dbus = interrupt,
-                    .mreq = 0,
-                    .rd = 0,
-                    .m1 = 1,
-                    .prefix_cb = 0,
-                });
-                break;
-            }
-        }
     }
 
     return bus;
@@ -1504,7 +1481,7 @@ fn half_carry_sub(reg: u8, num: u8) u1 {
 
 fn add_signed(dreg: u16, e: u8) u16 {
     const signed_e: i8 = @bitCast(e);
-    const sign_extended: u16 = @bitCast(@as(i16, @intCast(signed_e)));
+    const sign_extended: u16 = @bitCast(@as(i16, signed_e));
     return dreg +% sign_extended;
 }
 
@@ -1525,16 +1502,42 @@ fn mem_write(bus: Pins, addr: u16, data: u8) Pins {
     });
 }
 
-/// Fetches the next instruction opcode and resets the cycle counter.
+/// Fetches the next instruction opcode, checks for interrupts, and resets the cycle counter.
 fn fetch_and_decode(cpu: *SM83, bus: Pins) Pins {
     cpu.cycle = 0;
-    return bus.set(.{
+    return cpu.service_interrupts(bus) orelse bus.set(.{
         .abus = cpu.registers.pc,
         .mreq = 1,
         .rd = 1,
         .m1 = 1,
         .prefix_cb = 0,
     });
+}
+
+fn service_interrupts(cpu: *SM83, input_bus: Pins) ?Pins {
+    var bus = input_bus;
+    if (cpu.ime) {
+        inline for (@typeInfo(IRMask).@"struct".fields) |struct_field| {
+            const name = struct_field.name;
+            if (comptime std.mem.eql(u8, name, "unused")) continue;
+            const if_field = @field(bus.int, name);
+            const ie_field = @field(cpu.ie, name);
+            if (if_field & ie_field == 1) {
+                const interrupt = @field(Interrupts, name);
+                @field(bus.int, name) = 0;
+                cpu.ime = false;
+                return bus.set(.{
+                    .dbus = interrupt,
+                    .mreq = 0,
+                    .rd = 0,
+                    .m1 = 1,
+                    .prefix_cb = 0,
+                    .halt = 0,
+                });
+            }
+        }
+    }
+    return null;
 }
 
 fn fetch_and_decode_extended(cpu: *SM83, bus: Pins) Pins {

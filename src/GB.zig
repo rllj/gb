@@ -14,14 +14,12 @@ const GB = @This();
 
 sm83: SM83,
 ppu: PPU,
-memory: []u8,
 bus: Pins,
+memory: []u8,
 timer: *Timer,
 timer_events: Timer.TimerEvents,
 oam_transfer_cycle: u8,
-cycle: usize = 0,
-
-io: std.Io,
+cycles: usize = 0,
 
 pub const JOYP = 0xFF00;
 pub const SERIAL_TRANSFER = 0xFF01;
@@ -30,7 +28,7 @@ pub const IF = 0xFF0F;
 pub const BANK = 0xFF50;
 pub const IE = 0xFFFF;
 
-pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
+pub fn init(allocator: Allocator, cartridge: []const u8) !GB {
     const memory: []u8 = try allocator.alloc(u8, 0x10000);
     @memset(memory, 0x00);
     @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
@@ -41,8 +39,7 @@ pub fn init(allocator: Allocator, io: std.Io, cartridge: []const u8) !GB {
         .sm83 = .{},
         .ppu = .{ .oam = memory[0xFE00..0xFEA0], .vram = memory[0x8000..0xA000] },
         .memory = memory,
-        .bus = .{},
-        .io = io,
+        .bus = .{ .dbus = bootrom[0x00] },
         .timer = @ptrCast(memory[Timer.SYSCLK_LO .. Timer.TAC + 1]),
         .timer_events = .{},
         .oam_transfer_cycle = 0,
@@ -53,24 +50,33 @@ pub fn deinit(self: *GB, allocator: Allocator) void {
     allocator.free(self.memory);
 }
 
-/// To be called at 4.194304 MHz.
-pub fn tick(self: *GB) void {
-    self.tcycle();
-    if (self.cycle % 4 == 0) {
-        self.mcycle();
+pub fn tick_tcycle(self: *GB) void {
+    self.ppu.dot(&self.bus);
+    if (self.cycles % 4 == 0) {
+        self.cycle_cpu();
     }
 
-    self.cycle += 1;
+    self.cycles +%= 1;
 }
 
-fn mcycle(self: *GB) void {
+pub fn tick_mcycle(self: *GB) void {
+    for (0..4) |_| {
+        self.tick_tcycle();
+    }
+}
+
+pub fn tick_inst(self: *GB) void {
+    while (true) {
+        self.tick_mcycle();
+        if (self.bus.m1 == 1 and self.bus.prefix_cb == 0) return;
+    }
+}
+
+fn cycle_cpu(self: *GB) void {
     const prev_timer = self.timer_from_mmio();
 
-    const has_pending_interrupt = self.sm83.ie.to_byte() & self.bus.int.to_byte() == 0;
-    if (self.bus.halt == 0 or !has_pending_interrupt) {
-        const bus = self.sm83.tick(self.bus);
-        self.bus = self.handle_cpu_bus(bus);
-    }
+    const bus = self.sm83.tick(self.bus);
+    self.bus = self.handle_cpu_bus(bus);
     self.timer_events = self.timer.tick(
         prev_timer,
         self.timer_events.overflow,
@@ -89,20 +95,16 @@ fn mcycle(self: *GB) void {
     }
 }
 
-fn tcycle(self: *GB) void {
-    self.ppu.dot(&self.bus);
-}
-
 fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
     if (bus.mreq == 1 and bus.wr == 1) {
         switch (bus.abus) {
-            0x0000...0x7FFF => std.debug.print("Attempt to write to ROM at 0x{X:0>4}, instr: 0o{o}\n", .{ bus.abus, self.sm83.registers.ir }),
+            0x0000...0x7FFF => {},
             0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
             0xA000...0xBFFF => self.write_ram(bus.abus, bus.dbus),
             0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),
             0xE000...0xFDFF => self.write_ram(bus.abus - 0x2000, bus.dbus),
             0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
-            0xFEA0...0xFEFF => std.debug.print("Illegal write at address 0x{X:0>2}\n", .{bus.abus}),
+            0xFEA0...0xFEFF => {},
             0xFF0F => return self.write_if(bus),
             0xFF00...0xFF0E, 0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
             0xFF80...0xFFFE => self.write_hram(bus.abus, bus.dbus),
@@ -120,7 +122,7 @@ fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
             0xFEA0...0xFEFF => std.debug.panic("Illegal read at address 0x{X:0>2}\n", .{bus.abus}),
             0xFF0F => self.read_if(bus),
             0xFF00...0xFF0E, 0xFF10...0xFF7F => self.read_io(bus),
-            0xFF80...0xFFFE => self.read_ram(bus),
+            0xFF80...0xFFFE => self.read_hram(bus),
             0xFFFF => self.read_ie(bus),
         };
     }
@@ -163,7 +165,7 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
             self.memory[Timer.SYSCLK_LO] = 0;
         },
         PPU.LCDC => self.ppu.lcdc = @bitCast(data),
-        PPU.STAT => self.ppu.stat = @bitCast(data & 0b01111100), // TODO implement stat write bug. I might actually get this one for free by implementing the stat bus. Haven't testet it, though.
+        PPU.STAT => self.ppu.stat = @bitCast(data & 0b01111100), // TODO implement stat write bug.
         PPU.SCY => self.ppu.scy = data,
         PPU.SCX => self.ppu.scx = data,
         PPU.LY => {},
@@ -193,7 +195,11 @@ fn read_ram(self: *GB, bus: Pins) Pins {
     return bus.set(.{ .dbus = self.memory[bus.abus] });
 }
 
-fn read_bootrom(self: *GB, bus: Pins) Pins {
+fn read_hram(self: *GB, bus: Pins) Pins {
+    return bus.set(.{ .dbus = self.memory[bus.abus] });
+}
+
+fn read_bootrom(self: *const GB, bus: Pins) Pins {
     if (self.oam_transfer_cycle != 0) return bus;
     if (self.memory[BANK] & 1 == 0) {
         return bus.set(.{ .dbus = bootrom[bus.abus] });
@@ -261,11 +267,61 @@ pub fn debug_log(self: *const GB, writer: *std.Io.Writer) !void {
             self.sm83.registers.l,
             self.sm83.registers.sp,
             pc,
-            self.memory[pc],
-            self.memory[pc + 1],
-            self.memory[pc + 2],
-            self.memory[pc + 3],
+            self.read_bootrom(.{ .abus = pc }).dbus,
+            self.read_bootrom(.{ .abus = pc + 1 }).dbus,
+            self.read_bootrom(.{ .abus = pc + 2 }).dbus,
+            self.read_bootrom(.{ .abus = pc + 3 }).dbus,
         },
     );
     try writer.flush();
+}
+
+// https://gist.github.com/SonoSooS/c0055300670d678b5ae8433e20bea595#halt
+test "HALT" {
+    const t = @import("std").testing;
+
+    const LD_C_A = 0x4F;
+    const NOP = 0x00;
+    const HALT = 0x76;
+    const INC_C = 0x0C;
+
+    const rom = try t.allocator.alloc(u8, 0x8000);
+    defer t.allocator.free(rom);
+    @memset(rom, 0);
+    const insts: [5]u8 = .{
+        LD_C_A, NOP, HALT, NOP, INC_C,
+    };
+    @memcpy(rom[0x100..0x105], &insts);
+
+    var gb: GB = try .init(t.allocator, rom);
+
+    while (gb.sm83.registers.pc < 0x100) {
+        gb.tick_inst();
+    }
+
+    gb.tick_inst();
+    try t.expectEqual(gb.sm83.registers.a, gb.sm83.registers.c);
+    gb.tick_inst();
+    for (0..100) |i| {
+        gb.tick_inst();
+        std.debug.print("{}\n", .{i});
+        try t.expectEqual(1, gb.bus.halt);
+        try t.expectEqual(0x102, gb.sm83.registers.pc);
+        try t.expectEqual(HALT, gb.sm83.registers.ir);
+    }
+    gb.bus.int.timer = 1;
+    gb.tick_mcycle();
+    try t.expectEqual(0x103, gb.sm83.registers.pc);
+    if (SM83.Interrupts.timer == gb.sm83.registers.ir) {
+        return error.TestFailed;
+    }
+    gb.tick_mcycle();
+    try t.expectEqual(SM83.Interrupts.timer, gb.sm83.registers.ir);
+    try t.expectEqual(0x103, gb.sm83.registers.pc);
+    gb.tick_mcycle();
+    try t.expectEqual(0x102, gb.sm83.registers.pc);
+    gb.tick_mcycle();
+    gb.tick_mcycle();
+    gb.tick_mcycle();
+    try t.expectEqual(0x0050, gb.sm83.registers.pc);
 }

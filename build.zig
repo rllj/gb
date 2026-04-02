@@ -9,22 +9,62 @@ pub fn build(b: *std.Build) !void {
         .target = target,
     });
 
-    const exe = b.addExecutable(.{
-        .name = "gb",
-        .root_module = b.createModule(.{
-            .optimize = optimize,
-            .target = target,
-            .root_source_file = b.path("src/main.zig"),
-        }),
+    const lib_mod = b.addModule("GB", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-    exe.root_module.addImport("sdl3", sdl3.module("sdl3"));
-    b.installArtifact(exe);
+
+    const debugger_mod = b.createModule(.{
+        .root_source_file = b.path("debugger/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{.name = "GB", .module = lib_mod},
+        }
+    });
+
+    const emu_mod = b.createModule(.{
+        .root_source_file = b.path("emu/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{.name = "GB", .module = lib_mod},
+            .{.name = "sdl3", .module = sdl3.module("sdl3")}
+        }
+    });
+
+    const lib = b.addLibrary(.{
+        .root_module = lib_mod,
+        .name = "GB",
+    });
+    const install_lib = b.addInstallArtifact(lib, .{});
+
+    const debugger = b.addExecutable(.{
+        .name = "debugger",
+        .root_module = debugger_mod,
+    });
+    const install_debugger = b.addInstallArtifact(debugger, .{});
+    const run_debugger = b.addRunArtifact(debugger);
+    const emu = b.addExecutable(.{
+        .name = "emu",
+        .root_module = emu_mod,
+    });
+    const install_emu = b.addInstallArtifact(emu, .{});
+    const run_emu = b.addRunArtifact(emu);
+
+    const install_debugger_step = b.step("debugger", "Compile the debugger");
+    install_debugger_step.dependOn(&install_debugger.step);
+
+    const install_emu_step = b.step("emu", "Compile the emu");
+    install_emu_step.dependOn(&install_emu.step);
+
+    const run_debugger_step = b.step("run-debugger", "Run the debugger");
+    run_debugger_step.dependOn(&run_debugger.step);
+
+    const run_step = b.step("run-emu", "Run the emulator");
+    run_step.dependOn(&run_emu.step);
 
     const check = b.step("check", "Check step for ZLS");
-    check.dependOn(&exe.step);
-
-    const run = b.addRunArtifact(exe);
-    const run_step = b.step("run", "Run the application");
-
-    run_step.dependOn(&run.step);
+    check.dependOn(&install_lib.step);
 }

@@ -376,7 +376,11 @@ fn advance_fetcher(self: *PPU) bool {
 
 fn put_pixel(self: *PPU, pixel: u2) void {
     const pixel_pos = @as(u16, self.scanline_pixel) + @as(u16, self.ly) * 160;
-    const colour = self.bgp.from_index(pixel);
+    const colour =
+        if (self.lcdc.bg_window_enable == 1)
+            self.bgp.from_index(pixel)
+        else
+            self.bgp.from_index(0);
     self.display[pixel_pos] = colour.rgba_8_8_8_8();
 }
 

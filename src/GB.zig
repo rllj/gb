@@ -177,7 +177,7 @@ fn write_if(_: *GB, bus: Pins) Pins {
 fn write_io(self: *GB, addr: u16, data: u8) void {
     if (self.oam_transfer_cycle != 0) return;
     if (addr == SERIAL_TRANSFER) {
-        // std.debug.print("{c}", .{data});
+        std.debug.print("{c}", .{data});
     }
     switch (addr) {
         Timer.DIV => {
@@ -200,10 +200,10 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
         PPU.WY => self.ppu.wy = data,
         PPU.WX => self.ppu.wx = data,
         JOYP => {
-            const enable_buttons: u1 = @truncate(data >> 4);
-            const enable_dpad: u1 = @truncate(data >> 5);
-            self.joyp.dpad = enable_dpad;
+            const enable_dpad: u1 = @truncate(data >> 4);
+            const enable_buttons: u1 = @truncate(data >> 5);
             self.joyp.buttons = enable_buttons;
+            self.joyp.dpad = enable_dpad;
         },
         else => self.write_ram(addr, data),
     }

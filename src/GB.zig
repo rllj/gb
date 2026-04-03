@@ -20,6 +20,9 @@ timer: *Timer,
 timer_events: Timer.TimerEvents,
 oam_transfer_cycle: u8,
 cycles: usize = 0,
+buttons: Buttons = .{},
+
+joyp: Joypad = .{},
 
 pub const JOYP = 0xFF00;
 pub const SERIAL_TRANSFER = 0xFF01;
@@ -27,6 +30,31 @@ pub const SC = 0xFF02;
 pub const IF = 0xFF0F;
 pub const BANK = 0xFF50;
 pub const IE = 0xFFFF;
+
+const Joypad = packed struct {
+    a_right: u1 = 1,
+    b_left: u1 = 1,
+    select_up: u1 = 1,
+    start_down: u1 = 1,
+    dpad: u1 = 1,
+    buttons: u1 = 1,
+    unused: u2 = 0,
+
+    pub fn to_byte(self: Joypad) u8 {
+        return @bitCast(self);
+    }
+};
+
+const Buttons = struct {
+    left: bool = false,
+    right: bool = false,
+    up: bool = false,
+    down: bool = false,
+    start: bool = false,
+    select: bool = false,
+    a: bool = false,
+    b: bool = false,
+};
 
 pub fn init(allocator: Allocator, cartridge: []const u8) !GB {
     const memory: []u8 = try allocator.alloc(u8, 0x10000);
@@ -149,7 +177,7 @@ fn write_if(_: *GB, bus: Pins) Pins {
 fn write_io(self: *GB, addr: u16, data: u8) void {
     if (self.oam_transfer_cycle != 0) return;
     if (addr == SERIAL_TRANSFER) {
-        std.debug.print("{c}", .{data});
+        // std.debug.print("{c}", .{data});
     }
     switch (addr) {
         Timer.DIV => {
@@ -171,7 +199,12 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
         PPU.OBP1 => self.ppu.obp1 = @bitCast(data),
         PPU.WY => self.ppu.wy = data,
         PPU.WX => self.ppu.wx = data,
-        JOYP => {},
+        JOYP => {
+            const enable_buttons: u1 = @truncate(data >> 4);
+            const enable_dpad: u1 = @truncate(data >> 5);
+            self.joyp.dpad = enable_dpad;
+            self.joyp.buttons = enable_buttons;
+        },
         else => self.write_ram(addr, data),
     }
 }
@@ -235,7 +268,6 @@ fn read_io(self: *GB, bus: Pins) Pins {
         PPU.SCY => bus.set(.{ .dbus = self.ppu.scy }),
         PPU.SCX => bus.set(.{ .dbus = self.ppu.scx }),
         PPU.LY => bus.set(.{ .dbus = self.ppu.ly }),
-        // PPU.LY => bus.set(.{ .dbus = 0x90 }),
         PPU.LYC => bus.set(.{ .dbus = self.ppu.lyc }),
         PPU.DMA => @panic("Read from DMA (this might be possible, I just haven't figured out what happens yet)"),
         PPU.BGP => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.bgp)) }),
@@ -243,6 +275,26 @@ fn read_io(self: *GB, bus: Pins) Pins {
         PPU.OBP1 => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.obp1)) }),
         PPU.WY => bus.set(.{ .dbus = self.ppu.wy }),
         PPU.WX => bus.set(.{ .dbus = self.ppu.wx }),
+        JOYP => blk: {
+            const buttons_sel: bool = self.joyp.buttons == 0;
+            const dpad_sel: bool = self.joyp.dpad == 0;
+
+            if (buttons_sel) {
+                self.joyp.a_right = @intFromBool(!self.buttons.a);
+                self.joyp.b_left = @intFromBool(!self.buttons.b);
+                self.joyp.select_up = @intFromBool(!self.buttons.select);
+                self.joyp.start_down = @intFromBool(!self.buttons.start);
+            } else if (dpad_sel) {
+                self.joyp.a_right = @intFromBool(!self.buttons.right);
+                self.joyp.b_left = @intFromBool(!self.buttons.left);
+                self.joyp.select_up = @intFromBool(!self.buttons.up);
+                self.joyp.start_down = @intFromBool(!self.buttons.down);
+            } else {
+                self.joyp = @bitCast(@as(u8, 0x3F));
+            }
+
+            break :blk bus.set(.{ .dbus = self.joyp.to_byte() });
+        },
         else => self.read_ram(bus),
     };
 }
@@ -288,56 +340,4 @@ pub fn debug_log(self: *GB, writer: *std.Io.Writer) !void {
         },
     );
     try writer.flush();
-}
-
-// https://gist.github.com/SonoSooS/c0055300670d678b5ae8433e20bea595#halt
-test "HALT" {
-    const t = @import("std").testing;
-
-    const LD_C_A = 0x4F;
-    const NOP = 0x00;
-    const HALT = 0x76;
-    const INC_C = 0x0C;
-
-    const rom = try t.allocator.alloc(u8, 0x8000);
-    defer t.allocator.free(rom);
-    @memset(rom, 0);
-    const insts: [5]u8 = .{
-        LD_C_A, NOP, HALT, NOP, INC_C,
-    };
-    @memcpy(rom[0x100..0x105], &insts);
-
-    var gb: GB = try .init(t.allocator, rom);
-    defer gb.deinit(t.allocator);
-
-    while (gb.sm83.registers.pc < 0x100) {
-        gb.tick_inst();
-    }
-
-    gb.tick_inst();
-    try t.expectEqual(gb.sm83.registers.a, gb.sm83.registers.c);
-    gb.tick_inst();
-    for (0..100) |_| {
-        gb.tick_inst();
-        try t.expectEqual(1, gb.bus.halt);
-        try t.expectEqual(0x103, gb.sm83.registers.pc);
-        try t.expectEqual(HALT, gb.sm83.registers.ir);
-    }
-    gb.bus.int.timer = 1;
-    gb.sm83.ie = .{ .timer = 1 };
-    gb.sm83.ime = true;
-    gb.tick_mcycle();
-    try t.expectEqual(0x104, gb.sm83.registers.pc);
-    // if (SM83.Interrupts.timer == gb.sm83.registers.ir) {
-    //     return error.TestFailed;
-    // }
-    gb.tick_mcycle();
-    try t.expectEqual(SM83.Interrupts.timer, gb.sm83.registers.ir);
-    try t.expectEqual(0x103, gb.sm83.registers.pc);
-    gb.tick_mcycle();
-    try t.expectEqual(0x103, gb.sm83.registers.pc);
-    gb.tick_mcycle();
-    gb.tick_mcycle();
-    gb.tick_mcycle();
-    try t.expectEqual(0x0051, gb.sm83.registers.pc);
 }

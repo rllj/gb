@@ -100,11 +100,32 @@ pub fn main(init: std.process.Init) !void {
                 .quit => quit = true,
                 .terminating => quit = true,
                 .key_down => |keyboard| {
-                    gb.memory[GB.JOYP] = 0x30;
-                    std.debug.print("Key down: {s}\n", .{@tagName(keyboard.key.?)});
+                    switch (keyboard.key.?) {
+                        .k => gb.buttons.a = true,
+                        .l => gb.buttons.b = true,
+                        .h => gb.buttons.select = true,
+                        .j => gb.buttons.start = true,
+
+                        .w => gb.buttons.up = true,
+                        .a => gb.buttons.left = true,
+                        .s => gb.buttons.down = true,
+                        .d => gb.buttons.right = true,
+                        else => {},
+                    }
                 },
-                .key_up => {
-                    gb.memory[GB.JOYP] = 0x0F;
+                .key_up => |keyboard| {
+                    switch (keyboard.key.?) {
+                        .k => gb.buttons.a = false,
+                        .l => gb.buttons.b = false,
+                        .h => gb.buttons.select = false,
+                        .j => gb.buttons.start = false,
+
+                        .w => gb.buttons.up = false,
+                        .a => gb.buttons.left = false,
+                        .s => gb.buttons.down = false,
+                        .d => gb.buttons.right = false,
+                        else => {},
+                    }
                 },
                 else => {},
             };

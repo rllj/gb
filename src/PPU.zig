@@ -260,7 +260,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
 
             self.dots_per_mode += 1;
 
-            if (self.ly == 153) {
+            if (self.ly == 154) {
                 self.dots_per_mode = 0;
                 self.ly = 0;
                 self.stat.mode = .oam_scan;

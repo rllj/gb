@@ -95,37 +95,28 @@ fn cycle_cpu(self: *GB) void {
     }
 }
 
-fn handle_cpu_bus(self: *GB, input_bus: Pins) Pins {
-    var bus = input_bus;
-    if (bus.mreq == 1 and bus.wr == 1) {
-        switch (bus.abus) {
-            0x0000...0x7FFF => {},
-            0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
-            0xA000...0xBFFF => self.write_ram(bus.abus, bus.dbus),
-            0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),
-            0xE000...0xFDFF => self.write_ram(bus.abus - 0x2000, bus.dbus),
-            0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
-            0xFEA0...0xFEFF => {},
-            0xFF0F => return self.write_if(bus),
-            0xFF00...0xFF0E, 0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
-            0xFF80...0xFFFE => self.write_hram(bus.abus, bus.dbus),
-            0xFFFF => self.write_ie(bus.dbus),
-        }
-    } else if (bus.mreq == 1 and bus.rd == 1) {
-        bus = switch (bus.abus) {
-            0x0000...0x00FF => self.read_bootrom(bus),
-            0x0100...0x7FFF => self.read_ram(bus),
-            0x8000...0x9FFF => self.read_vram(bus),
-            0xA000...0xBFFF => self.read_ram(bus),
-            0xC000...0xDFFF => self.read_ram(bus),
-            0xE000...0xFDFF => self.read_ram(bus.set(.{ .abus = bus.abus - 0x2000 })),
-            0xFE00...0xFE9F => self.read_oam(bus),
-            0xFEA0...0xFEFF => std.debug.panic("Illegal read at address 0x{X:0>2}\n", .{bus.abus}),
-            0xFF0F => self.read_if(bus),
-            0xFF00...0xFF0E, 0xFF10...0xFF7F => self.read_io(bus),
-            0xFF80...0xFFFE => self.read_hram(bus),
-            0xFFFF => self.read_ie(bus),
-        };
+fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
+    return if (bus.mreq == 1 and bus.wr == 1)
+        self.mem_write(bus)
+    else if (bus.mreq == 1 and bus.rd == 1)
+        self.mem_read(bus)
+    else
+        bus;
+}
+
+fn mem_write(self: *GB, bus: Pins) Pins {
+    switch (bus.abus) {
+        0x0000...0x7FFF => {},
+        0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
+        0xA000...0xBFFF => self.write_ram(bus.abus, bus.dbus),
+        0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),
+        0xE000...0xFDFF => self.write_ram(bus.abus - 0x2000, bus.dbus),
+        0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
+        0xFEA0...0xFEFF => {},
+        0xFF0F => return self.write_if(bus),
+        0xFF00...0xFF0E, 0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
+        0xFF80...0xFFFE => self.write_hram(bus.abus, bus.dbus),
+        0xFFFF => self.write_ie(bus.dbus),
     }
     return bus;
 }
@@ -189,6 +180,23 @@ fn write_ie(self: *GB, data: u8) void {
     self.sm83.ie = @bitCast(data);
 }
 
+fn mem_read(self: *GB, bus: Pins) Pins {
+    return switch (bus.abus) {
+        0x0000...0x00FF => self.read_bootrom(bus),
+        0x0100...0x7FFF => self.read_ram(bus),
+        0x8000...0x9FFF => self.read_vram(bus),
+        0xA000...0xBFFF => self.read_ram(bus),
+        0xC000...0xDFFF => self.read_ram(bus),
+        0xE000...0xFDFF => self.read_ram(bus.set(.{ .abus = bus.abus - 0x2000 })),
+        0xFE00...0xFE9F => self.read_oam(bus),
+        0xFEA0...0xFEFF => std.debug.panic("Illegal read at address 0x{X:0>2}\n", .{bus.abus}),
+        0xFF0F => self.read_if(bus),
+        0xFF00...0xFF0E, 0xFF10...0xFF7F => self.read_io(bus),
+        0xFF80...0xFFFE => self.read_hram(bus),
+        0xFFFF => self.read_ie(bus),
+    };
+}
+
 fn read_vram(self: *GB, bus: Pins) Pins {
     if (self.oam_transfer_cycle != 0) return bus;
     if (self.ppu.stat.mode == .draw and self.ppu.lcdc.lcd_enable == 1) return bus;
@@ -227,6 +235,7 @@ fn read_io(self: *GB, bus: Pins) Pins {
         PPU.SCY => bus.set(.{ .dbus = self.ppu.scy }),
         PPU.SCX => bus.set(.{ .dbus = self.ppu.scx }),
         PPU.LY => bus.set(.{ .dbus = self.ppu.ly }),
+        // PPU.LY => bus.set(.{ .dbus = 0x90 }),
         PPU.LYC => bus.set(.{ .dbus = self.ppu.lyc }),
         PPU.DMA => @panic("Read from DMA (this might be possible, I just haven't figured out what happens yet)"),
         PPU.BGP => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.bgp)) }),
@@ -257,7 +266,7 @@ fn timer_from_mmio(self: *GB) Timer {
     };
 }
 
-pub fn debug_log(self: *const GB, writer: *std.Io.Writer) !void {
+pub fn debug_log(self: *GB, writer: *std.Io.Writer) !void {
     const pc = self.sm83.registers.pc;
     try writer.print(
         "A:{X:0>2} F:{X:0>2} B:{X:0>2} C:{X:0>2} D:{X:0>2} E:{X:0>2} H:{X:0>2} L:{X:0>2} SP:{X:0>4} PC:{X:0>4} PCMEM:{X:0>2},{X:0>2},{X:0>2},{X:0>2}\n",
@@ -271,11 +280,11 @@ pub fn debug_log(self: *const GB, writer: *std.Io.Writer) !void {
             self.sm83.registers.h,
             self.sm83.registers.l,
             self.sm83.registers.sp,
-            pc,
-            self.read_bootrom(.{ .abus = pc }).dbus,
-            self.read_bootrom(.{ .abus = pc + 1 }).dbus,
-            self.read_bootrom(.{ .abus = pc + 2 }).dbus,
-            self.read_bootrom(.{ .abus = pc + 3 }).dbus,
+            pc - 1,
+            self.memory[pc - 1],
+            self.memory[pc + 0],
+            self.memory[pc + 1],
+            self.memory[pc + 2],
         },
     );
     try writer.flush();

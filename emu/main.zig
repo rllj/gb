@@ -44,6 +44,12 @@ pub fn main(init: std.process.Init) !void {
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
 
+    var stdout = std.Io.File.stdout();
+    defer stdout.close(init.io);
+    var buffer: [4096]u8 = undefined;
+    var writer = stdout.writer(init.io, &buffer);
+    defer writer.flush() catch {};
+
     var quit = false;
     while (!quit) {
         var cycle: usize = 0;
@@ -93,11 +99,12 @@ pub fn main(init: std.process.Init) !void {
             switch (event) {
                 .quit => quit = true,
                 .terminating => quit = true,
-                .key_down => {
+                .key_down => |keyboard| {
                     gb.memory[GB.JOYP] = 0x30;
+                    std.debug.print("Key down: {s}\n", .{@tagName(keyboard.key.?)});
                 },
                 .key_up => {
-                    gb.memory[GB.JOYP] = 0x3F;
+                    gb.memory[GB.JOYP] = 0x0F;
                 },
                 else => {},
             };

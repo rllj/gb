@@ -52,83 +52,80 @@ pub fn main(init: std.process.Init) !void {
 
     var quit = false;
     while (!quit) {
-        var cycle: usize = 0;
-        while (!gb.ppu.temp_ready_to_render) {
-            gb.tick_mcycle();
-            cycle += 1;
+        gb.tick_mcycle();
+
+        if (gb.ppu.dots_per_mode == 456) {
+            _ = fps_capper.delay();
+
+            {
+                const data, _ = try texture.lock(null);
+                @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
+                texture.unlock();
+
+                try renderer.clear();
+                try renderer.renderTexture(texture, null, null);
+                try renderer.present();
+            }
+
+            {
+                const debug_data = try gb.ppu.debug_generate_tilemap(0, init.gpa);
+                defer init.gpa.free(debug_data);
+                const data, _ = try texture_debug.lock(null);
+                @memcpy(data, std.mem.sliceAsBytes(debug_data));
+                texture_debug.unlock();
+
+                try renderer2.clear();
+                try renderer2.renderTexture(texture_debug, null, null);
+                try renderer2.present();
+            }
+
+            {
+                const debug_data = try gb.ppu.debug_generate_tilemap(1, init.gpa);
+                defer init.gpa.free(debug_data);
+                const data, _ = try texture_debug2.lock(null);
+                @memcpy(data, std.mem.sliceAsBytes(debug_data));
+                texture_debug2.unlock();
+
+                try renderer3.clear();
+                try renderer3.renderTexture(texture_debug2, null, null);
+                try renderer3.present();
+            }
+
+            while (sdl3.events.poll()) |event|
+                switch (event) {
+                    .quit => quit = true,
+                    .terminating => quit = true,
+                    .key_down => |keyboard| {
+                        switch (keyboard.key.?) {
+                            .k => gb.buttons.a = true,
+                            .l => gb.buttons.b = true,
+                            .h => gb.buttons.select = true,
+                            .j => gb.buttons.start = true,
+
+                            .w => gb.buttons.up = true,
+                            .a => gb.buttons.left = true,
+                            .s => gb.buttons.down = true,
+                            .d => gb.buttons.right = true,
+                            else => {},
+                        }
+                    },
+                    .key_up => |keyboard| {
+                        switch (keyboard.key.?) {
+                            .k => gb.buttons.a = false,
+                            .l => gb.buttons.b = false,
+                            .h => gb.buttons.select = false,
+                            .j => gb.buttons.start = false,
+
+                            .w => gb.buttons.up = false,
+                            .a => gb.buttons.left = false,
+                            .s => gb.buttons.down = false,
+                            .d => gb.buttons.right = false,
+                            else => {},
+                        }
+                    },
+                    else => {},
+                };
         }
-        gb.ppu.temp_ready_to_render = false;
-
-        _ = fps_capper.delay();
-
-        {
-            const data, _ = try texture.lock(null);
-            @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
-            texture.unlock();
-
-            try renderer.clear();
-            try renderer.renderTexture(texture, null, null);
-            try renderer.present();
-        }
-
-        {
-            const debug_data = try gb.ppu.debug_generate_tilemap(0, init.gpa);
-            defer init.gpa.free(debug_data);
-            const data, _ = try texture_debug.lock(null);
-            @memcpy(data, std.mem.sliceAsBytes(debug_data));
-            texture_debug.unlock();
-
-            try renderer2.clear();
-            try renderer2.renderTexture(texture_debug, null, null);
-            try renderer2.present();
-        }
-
-        {
-            const debug_data = try gb.ppu.debug_generate_tilemap(1, init.gpa);
-            defer init.gpa.free(debug_data);
-            const data, _ = try texture_debug2.lock(null);
-            @memcpy(data, std.mem.sliceAsBytes(debug_data));
-            texture_debug2.unlock();
-
-            try renderer3.clear();
-            try renderer3.renderTexture(texture_debug2, null, null);
-            try renderer3.present();
-        }
-
-        while (sdl3.events.poll()) |event|
-            switch (event) {
-                .quit => quit = true,
-                .terminating => quit = true,
-                .key_down => |keyboard| {
-                    switch (keyboard.key.?) {
-                        .k => gb.buttons.a = true,
-                        .l => gb.buttons.b = true,
-                        .h => gb.buttons.select = true,
-                        .j => gb.buttons.start = true,
-
-                        .w => gb.buttons.up = true,
-                        .a => gb.buttons.left = true,
-                        .s => gb.buttons.down = true,
-                        .d => gb.buttons.right = true,
-                        else => {},
-                    }
-                },
-                .key_up => |keyboard| {
-                    switch (keyboard.key.?) {
-                        .k => gb.buttons.a = false,
-                        .l => gb.buttons.b = false,
-                        .h => gb.buttons.select = false,
-                        .j => gb.buttons.start = false,
-
-                        .w => gb.buttons.up = false,
-                        .a => gb.buttons.left = false,
-                        .s => gb.buttons.down = false,
-                        .d => gb.buttons.right = false,
-                        else => {},
-                    }
-                },
-                else => {},
-            };
     }
 }
 

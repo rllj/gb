@@ -187,7 +187,7 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
         PPU.LCDC => self.ppu.lcdc = @bitCast(data),
         PPU.STAT => { // TODO implement stat write bug.
             const stat: u8 = @bitCast(self.ppu.stat);
-            self.ppu.stat = @bitCast((data & 0b01111000) | stat & 0b111);
+            self.ppu.stat = @bitCast((data & 0b01111000) | (stat & 0b111));
         },
         PPU.SCY => self.ppu.scy = data,
         PPU.SCX => self.ppu.scx = data,

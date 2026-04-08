@@ -318,11 +318,12 @@ pub fn dot(self: *PPU, bus: *Pins) void {
 }
 
 fn fetch_row(self: *PPU, scanline_y: u8) void {
+    const scroll_y = if (self.layer == .window) 0 else self.scy;
     switch (self.fetcher.state) {
         .fetch_tile => {
             if (self.fetcher.advance()) {
                 const x: u16 = (self.fetcher.tile_x + self.scx / 8) & 0x1F;
-                const y: u16 = (scanline_y +% self.scy) / 8;
+                const y: u16 = (scanline_y +% scroll_y) / 8;
 
                 var tilemap_address: u16 = TILE_MAP_0_START;
                 if (self.lcdc.bg_tilemap_area == 1 and self.layer != .window) {
@@ -344,7 +345,7 @@ fn fetch_row(self: *PPU, scanline_y: u8) void {
                     0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
                     1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
                 };
-                const y: u16 = (scanline_y % 8 + self.scy % 8) % 8;
+                const y: u16 = (scanline_y % 8 + scroll_y % 8) % 8;
 
                 const tile_data_idx = tile_data_base + y * 2;
                 const tile_data = self.read_vram(tile_data_idx);
@@ -366,7 +367,7 @@ fn fetch_row(self: *PPU, scanline_y: u8) void {
                     0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
                     1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
                 };
-                const y: u16 = (scanline_y % 8 + self.scy % 8) % 8;
+                const y: u16 = (scanline_y % 8 + scroll_y % 8) % 8;
 
                 const tile_data_idx = tile_data_base + y * 2 + 1;
                 const tile_data = self.read_vram(tile_data_idx);

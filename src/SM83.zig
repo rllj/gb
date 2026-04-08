@@ -86,10 +86,10 @@ pub const Interrupts = struct {
 const Registers = struct {
     const Flags = packed struct {
         unused: u4 = 0,
-        c: bool = false,
-        h: bool = false,
-        n: bool = false,
-        z: bool = false,
+        c: bool,
+        h: bool,
+        n: bool,
+        z: bool,
     };
 
     ir: u8 = 0x00,

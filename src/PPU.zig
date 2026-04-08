@@ -47,15 +47,13 @@ wx: u8 = 0,
 // here.
 stat_line: u1 = 0,
 
-// TODO This certainly isn't optimal, and once I find out why OAM scan (mode 2)
-// doesn't take 84 cycles I'll make the PPU commicate with memory via a Bus
-// like the CPU.
 oam: []u8,
 vram: []u8,
 
 dots_per_mode: usize = 0,
 scanline_pixel: u8 = 0,
 visible_sprites: BoundedArray(u8, 10) = .{},
+window_y: u8 = 0,
 has_ly_matched_wy: bool = false,
 fetcher: Fetcher = .{},
 fifo: Fifo = .{},
@@ -92,12 +90,6 @@ const Fifo = struct {
         self.fifo <<= 2;
         self.len -= 1;
         return pixel;
-    }
-
-    pub fn clear(self: *Fifo) void {
-        self.fifo = 0;
-        self.len = 0;
-        self.discard_scroll = 0;
     }
 };
 
@@ -250,7 +242,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
             if (self.lcdc.window_enable == 1 and self.has_ly_matched_wy) {
                 if (self.scanline_pixel + 7 == self.wx and self.layer != .window) {
                     self.layer = .window;
-                    self.fifo.clear();
+                    self.fifo = .{};
                     self.fetcher = .{};
                 }
                 // if (@as(u16, self.wx) + self.scanline_pixel < 7 and self.fifo.discard_scroll == 0) {
@@ -267,10 +259,15 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                     self.scanline_pixel += 1;
                 }
             }
-            self.fetch_row();
+            switch (self.layer) {
+                .background => self.fetch_row(self.ly),
+                .window => self.fetch_row(self.window_y),
+                .sprite => unreachable,
+            }
 
             self.dots_per_mode += 1;
             if (self.scanline_pixel == 160) {
+                if (self.layer == .window) self.window_y += 1;
                 self.reset_scanline();
                 self.stat.mode = .hblank;
             }
@@ -303,6 +300,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
             if (self.ly == 154) {
                 self.dots_per_mode = 0;
                 self.ly = 0;
+                self.window_y = 0;
                 self.stat.mode = .oam_scan;
             }
         },
@@ -319,12 +317,12 @@ pub fn dot(self: *PPU, bus: *Pins) void {
     self.stat_line = stat_int;
 }
 
-fn fetch_row(self: *PPU, fetcher: *Fetcher) void {
-    switch (fetcher.state) {
+fn fetch_row(self: *PPU, scanline_y: u8) void {
+    switch (self.fetcher.state) {
         .fetch_tile => {
-            if (fetcher.advance()) {
-                const x: u16 = (fetcher.tile_x + self.scx / 8) & 0x1F;
-                const y: u16 = (self.ly +% self.scy) / 8;
+            if (self.fetcher.advance()) {
+                const x: u16 = (self.fetcher.tile_x + self.scx / 8) & 0x1F;
+                const y: u16 = (scanline_y +% self.scy) / 8;
 
                 var tilemap_address: u16 = TILE_MAP_0_START;
                 if (self.lcdc.bg_tilemap_area == 1 and self.layer != .window) {
@@ -335,18 +333,18 @@ fn fetch_row(self: *PPU, fetcher: *Fetcher) void {
                 }
 
                 const idx = x + y * 32;
-                fetcher.curr_tile = self.read_vram(tilemap_address + idx);
+                self.fetcher.curr_tile = self.read_vram(tilemap_address + idx);
 
-                fetcher.state = .fetch_low;
+                self.fetcher.state = .fetch_low;
             }
         },
         .fetch_low => {
-            if (fetcher.advance()) {
+            if (self.fetcher.advance()) {
                 const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => signed_tile_index(TILE_DATA_MIDDLE, fetcher.curr_tile),
-                    1 => TILE_DATA_START + @as(u16, fetcher.curr_tile) * 16,
+                    0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
+                    1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
                 };
-                const y: u16 = (self.ly % 8 + self.scy % 8) % 8;
+                const y: u16 = (scanline_y % 8 + self.scy % 8) % 8;
 
                 const tile_data_idx = tile_data_base + y * 2;
                 const tile_data = self.read_vram(tile_data_idx);
@@ -357,18 +355,18 @@ fn fetch_row(self: *PPU, fetcher: *Fetcher) void {
                     const bit: u2 = @truncate((tile_data >> i) & 1);
                     fetcher_buffer.enqueue(bit);
                 }
-                fetcher.buffer = fetcher_buffer.buffer;
+                self.fetcher.buffer = fetcher_buffer.buffer;
 
-                fetcher.state = .fetch_high;
+                self.fetcher.state = .fetch_high;
             }
         },
         .fetch_high => {
-            if (fetcher.advance()) {
+            if (self.fetcher.advance()) {
                 const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => signed_tile_index(TILE_DATA_MIDDLE, fetcher.curr_tile),
-                    1 => TILE_DATA_START + @as(u16, fetcher.curr_tile) * 16,
+                    0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
+                    1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
                 };
-                const y: u16 = (self.ly % 8 + self.scy % 8) % 8;
+                const y: u16 = (scanline_y % 8 + self.scy % 8) % 8;
 
                 const tile_data_idx = tile_data_base + y * 2 + 1;
                 const tile_data = self.read_vram(tile_data_idx);
@@ -379,15 +377,15 @@ fn fetch_row(self: *PPU, fetcher: *Fetcher) void {
                     const bit: u2 = @truncate((tile_data >> i) & 1);
                     fetcher_buffer.enqueue(bit << 1);
                 }
-                fetcher.buffer |= fetcher_buffer.buffer;
+                self.fetcher.buffer |= fetcher_buffer.buffer;
 
-                fetcher.state = .idle;
+                self.fetcher.state = .idle;
             }
         },
         .idle => {
-            if (self.fifo.try_enqueue_row(fetcher.buffer)) {
-                fetcher.state = .fetch_tile;
-                fetcher.tile_x += 1;
+            if (self.fifo.try_enqueue_row(self.fetcher.buffer)) {
+                self.fetcher.state = .fetch_tile;
+                self.fetcher.tile_x += 1;
             }
         },
     }

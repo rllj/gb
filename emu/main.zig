@@ -39,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
 
     try window.raise();
 
-    var gb: GB = try .init(init.gpa, @embedFile("roms/dmg-acid2.gb"));
+    var gb: GB = try .init(init.gpa, @embedFile("roms/tetris.gb"));
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
@@ -52,7 +52,7 @@ pub fn main(init: std.process.Init) !void {
 
     var quit = false;
     while (!quit) {
-        gb.tick_mcycle();
+        gb.tick_tcycle();
 
         if (gb.ppu.dots_per_mode == 456) {
             _ = fps_capper.delay();

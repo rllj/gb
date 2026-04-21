@@ -144,7 +144,7 @@ pub fn disassemble(writer: *std.Io.Writer, code: []const u8) !void {
         const opcode_byte = code[pos];
         pos += 1;
 
-        try writer.print("0x{X:0>4}:    ", .{pos});
+        try writer.print("0x{X:0>4}:  ", .{pos});
 
         const opcode = blk: {
             if (opcode_byte == 0xCB) {
@@ -192,6 +192,7 @@ pub fn disassemble(writer: *std.Io.Writer, code: []const u8) !void {
             pos += operand.bytes;
         }
         try writer.writeByte('\n');
+        try writer.flush();
     }
 }
 

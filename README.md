@@ -6,4 +6,4 @@ Currently passes the following of [Blargg's test roms](https://github.com/retrio
 
 ----
 
-Developed with Zig 0.16-master.
+Uses Zig 0.16.

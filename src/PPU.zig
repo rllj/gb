@@ -53,7 +53,8 @@ oam: []u8,
 vram: []u8,
 
 dots_per_mode: usize = 0,
-scanline_pixel: u8 = 0,
+scanline_pixels_consumed: u8 = 0,
+scanline_pixels_drawn: u8 = 0,
 visible_sprites: BoundedArray(u8, 10) = .{},
 window_y: u8 = 0,
 has_ly_matched_wy: bool = false,
@@ -61,7 +62,6 @@ fetcher: Fetcher = .{},
 bg_window_fifo: Fifo(PixelRow) = .{},
 sprite_fifo: Fifo(SpritePixelRow) = .{},
 layer: Layer = .background,
-has_discarded_row: bool = false,
 
 // TODO The PPU shouldn't own the display, of course
 display: [160 * 144]u32 = .{0x00} ** (160 * 144),
@@ -251,7 +251,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
         },
         .draw => {
             if (self.lcdc.window_enable == 1 and self.has_ly_matched_wy) {
-                if (self.scanline_pixel + 7 == self.wx and self.layer != .window) {
+                if (self.scanline_pixels_consumed + 7 == self.wx and self.layer != .window) {
                     // self.layer = .window;
                     // self.fetcher = .{};
                     // self.bg_window_fifo = .{};
@@ -266,7 +266,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
             }
 
             self.dots_per_mode += 1;
-            if (self.scanline_pixel == 168) {
+            if (self.scanline_pixels_drawn == 160) {
                 if (self.layer == .window) self.window_y += 1;
                 self.reset_scanline();
                 self.stat.mode = .hblank;
@@ -318,16 +318,16 @@ pub fn dot(self: *PPU, bus: *Pins) void {
 }
 
 fn dot_bg(self: *PPU) void {
-    const scanline_x = @as(u16, self.scx) + (self.scanline_pixel -| 8);
-    const scanline_y = @as(u16, self.scy) + self.ly;
+    const scanline_x = self.scx +% self.scanline_pixels_drawn;
+    const scanline_y = self.scy +% self.ly;
     self.fetcher_tick(scanline_x, scanline_y);
 
     if (self.bg_window_fifo.len > 0) {
         const pixel = self.bg_window_fifo.dequeue();
-        if (self.scanline_pixel > 7 + (self.scx % 8)) {
+        if (self.scanline_pixels_consumed > 7 + (self.scx % 8)) {
             self.put_pixel(pixel);
         }
-        self.scanline_pixel += 1;
+        self.scanline_pixels_consumed += 1;
     } else if (self.fetcher.state == .idle) {
         self.bg_window_fifo.enqueue_row(self.fetcher.consume());
     }
@@ -339,12 +339,12 @@ fn dot_sprite(self: *PPU) void {
     _ = self;
 }
 
-fn fetcher_tick(self: *PPU, scanline_x: u16, scanline_y: u16) void {
+fn fetcher_tick(self: *PPU, scanline_x: u8, scanline_y: u8) void {
     switch (self.fetcher.state) {
         .fetch_tile => {
             if (self.fetcher.advance()) {
-                const x = scanline_x / 8;
-                const y = scanline_y / 8;
+                const x: u16 = scanline_x / 8;
+                const y: u16 = scanline_y / 8;
 
                 var tilemap_address: u16 = TILE_MAP_0_START;
                 if (self.lcdc.bg_tilemap_area == 1 and self.layer != .window) {
@@ -366,7 +366,7 @@ fn fetcher_tick(self: *PPU, scanline_x: u16, scanline_y: u16) void {
                     0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
                     1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
                 };
-                const y: u16 = scanline_y % 8;
+                const y: u8 = scanline_y % 8;
 
                 const tile_data_idx = tile_data_base + y * 2;
                 const tile_data = self.read_vram(tile_data_idx);
@@ -374,7 +374,7 @@ fn fetcher_tick(self: *PPU, scanline_x: u16, scanline_y: u16) void {
                 for (0..8) |idx| {
                     const i: u3 = @truncate(7 - idx);
                     const bit: u2 = @truncate((tile_data >> i) & 1);
-                    self.fetcher.buffer[idx] = bit;
+                    self.fetcher.buffer[i] = bit;
                 }
 
                 self.fetcher.state = .fetch_high;
@@ -386,7 +386,7 @@ fn fetcher_tick(self: *PPU, scanline_x: u16, scanline_y: u16) void {
                     0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
                     1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
                 };
-                const y: u16 = scanline_y % 8;
+                const y: u8 = scanline_y % 8;
 
                 const tile_data_idx = tile_data_base + y * 2 + 1;
                 const tile_data = self.read_vram(tile_data_idx);
@@ -394,7 +394,7 @@ fn fetcher_tick(self: *PPU, scanline_x: u16, scanline_y: u16) void {
                 for (0..8) |idx| {
                     const i: u3 = @truncate(7 - idx);
                     const bit: u2 = @truncate((tile_data >> i) & 1);
-                    self.fetcher.buffer[idx] |= bit << 1;
+                    self.fetcher.buffer[i] |= bit << 1;
                 }
 
                 self.fetcher.state = .idle;
@@ -416,22 +416,23 @@ fn signed_tile_index(base_addr: u16, offset: u8) u16 {
 
 fn put_pixel(self: *PPU, pixel: u2) void {
     // Since we've already written to the "invisible" left part of the screen, we need to offset the scanline pixel.
-    const pixel_pos = @as(u16, self.scanline_pixel - 8) + @as(u16, self.ly) * 160;
+    const pixel_pos = @as(u16, self.scanline_pixels_drawn) + @as(u16, self.ly) * 160;
     const colour =
         if (self.lcdc.bg_window_enable == 1)
             self.bgp.from_index(pixel)
         else
             self.bgp.from_index(0);
     self.display[pixel_pos] = colour.rgba_8_8_8_8();
+    self.scanline_pixels_drawn += 1;
 }
 
 fn reset_scanline(self: *PPU) void {
     self.visible_sprites = .{};
-    self.scanline_pixel = 0;
+    self.scanline_pixels_consumed = 0;
+    self.scanline_pixels_drawn = 0;
     self.bg_window_fifo = .{};
     self.sprite_fifo = .{};
     self.layer = .background;
-    self.has_discarded_row = false;
 }
 
 pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.mem.Allocator) ![]const u32 {

@@ -52,11 +52,11 @@ stat_line: u1 = 0,
 oam: []u8,
 vram: []u8,
 
-dots_per_mode: usize = 0,
-scanline_pixels_consumed: u8 = 0,
+dots_per_frame: usize = 0,
 scanline_pixels_drawn: u8 = 0,
-visible_sprites: BoundedArray(u8, 10) = .{},
-window_y: u8 = 0,
+pixels_to_discard: u3 = 0,
+visible_sprites: BoundedArray(ObjectAttribute, 10) = .{},
+internal_wy: u8 = 0,
 has_ly_matched_wy: bool = false,
 fetcher: Fetcher = .{},
 bg_window_fifo: Fifo(PixelRow) = .{},
@@ -105,6 +105,7 @@ const Fetcher = struct {
     wait: bool = false,
     buffer: [8]u2 = .{0} ** 8,
     curr_tile: u8 = 0,
+    tile_x: u8 = 0,
 
     pub fn consume(self: *Fetcher) [8]u2 {
         assert(self.state == .idle);
@@ -227,13 +228,12 @@ pub fn dot(self: *PPU, bus: *Pins) void {
 
     switch (self.stat.mode) {
         .oam_scan => {
-            if (self.dots_per_mode == 0) {
+            if (self.dots_per_frame == 0) {
                 if (self.ly == self.wy) self.has_ly_matched_wy = true;
             }
 
-            self.dots_per_mode += 1;
-            if (self.dots_per_mode == 80) {
-                // TODO cycle-step
+            self.dots_per_frame += 1;
+            if (self.dots_per_frame == 80) {
                 var i: u8 = 0;
                 while (i < 40) : (i += 4) {
                     const y_pos = self.oam[i];
@@ -242,65 +242,79 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                         self.ly + 16 < y_pos + sprite_height and
                         self.visible_sprites.len < 10 and x_pos != 0)
                     {
-                        self.visible_sprites.push(i / 4);
+                        self.visible_sprites.push(.{
+                            self.oam[i],
+                            self.oam[i + 1],
+                            self.oam[i + 2],
+                            @bitCast(self.oam[i + 3]),
+                        });
                     }
                 }
-
+                // TODO sorting network
+                const sort_func = struct {
+                    pub fn cmp(_: anytype, lhs_oa: ObjectAttribute, rhs_oa: ObjectAttribute) bool {
+                        return lhs_oa.x_pos >= rhs_oa.x_pos;
+                    }
+                }.cmp;
+                std.sort.insertion(ObjectAttribute, self.visible_sprites.slice(), {}, sort_func);
+                self.pixels_to_discard = @truncate(self.scx);
                 self.stat.mode = .draw;
             }
         },
         .draw => {
             if (self.lcdc.window_enable == 1 and self.has_ly_matched_wy) {
-                if (self.scanline_pixels_consumed + 7 == self.wx and self.layer != .window) {
-                    // self.layer = .window;
-                    // self.fetcher = .{};
-                    // self.bg_window_fifo = .{};
+                if (self.scanline_pixels_drawn == self.wx + 1 and self.layer != .window) {
+                    self.layer = .window;
+                    self.fetcher = .{};
+                    self.bg_window_fifo = .{};
                 }
             }
 
-            switch (self.layer) {
-                // .background => self.dot_bg(),
-                // .window => self.dot_window(),
-                // .sprite => self.dot_sprite(),
-                else => self.dot_bg(),
+            if (switch (self.layer) {
+                .background => self.dot_bg(),
+                .window => self.dot_window(),
+                .sprite => self.merge_sprite(self.dot_sprite(), self.dot_bg()),
+            }) |pixel| {
+                self.put_pixel(pixel, self.scanline_pixels_drawn);
+                self.scanline_pixels_drawn += 1;
             }
 
-            self.dots_per_mode += 1;
-            if (self.scanline_pixels_drawn == 160) {
-                if (self.layer == .window) self.window_y += 1;
+            self.dots_per_frame += 1;
+            if (self.scanline_pixels_drawn == 168) {
+                if (self.layer == .window) self.internal_wy += 1;
                 self.reset_scanline();
                 self.stat.mode = .hblank;
             }
         },
         .hblank => {
-            self.dots_per_mode += 1;
+            self.dots_per_frame += 1;
 
-            if (self.dots_per_mode == 456) {
+            if (self.dots_per_frame == 456) {
                 if (self.ly == 143) {
                     self.stat.mode = .vblank;
                 } else {
                     self.stat.mode = .oam_scan;
                     self.ly += 1;
-                    self.dots_per_mode = 0;
+                    self.dots_per_frame = 0;
                 }
             }
         },
         .vblank => {
-            if (self.dots_per_mode == 456) {
+            if (self.dots_per_frame == 456) {
                 if (self.ly == 143) bus.int.vblank = 1;
                 self.has_ly_matched_wy = false;
             }
 
-            if (self.dots_per_mode % 456 == 0) {
+            if (self.dots_per_frame % 456 == 0) {
                 self.ly += 1;
             }
 
-            self.dots_per_mode += 1;
+            self.dots_per_frame += 1;
 
             if (self.ly == 154) {
-                self.dots_per_mode = 0;
+                self.dots_per_frame = 0;
                 self.ly = 0;
-                self.window_y = 0;
+                self.internal_wy = 0;
                 self.stat.mode = .oam_scan;
             }
         },
@@ -317,33 +331,51 @@ pub fn dot(self: *PPU, bus: *Pins) void {
     self.stat_line = stat_int;
 }
 
-fn dot_bg(self: *PPU) void {
-    const scanline_x = self.scx +% self.scanline_pixels_drawn;
+fn dot_bg(self: *PPU) ?u2 {
     const scanline_y = self.scy +% self.ly;
-    self.fetcher_tick(scanline_x, scanline_y);
+    // Pre-decrement tile_x, since we want to render a chunk off-screen first.
+    // TODO find a cleaner way
+    self.fetcher.tile_x -%= 1;
+    self.fetcher_tick(scanline_y);
+    self.fetcher.tile_x +%= 1;
 
     if (self.bg_window_fifo.len > 0) {
         const pixel = self.bg_window_fifo.dequeue();
-        if (self.scanline_pixels_consumed > 7 + (self.scx % 8)) {
-            self.put_pixel(pixel);
+        if (self.pixels_to_discard > 0) {
+            self.pixels_to_discard -= 1;
+        } else {
+            return pixel;
         }
-        self.scanline_pixels_consumed += 1;
+    } else if (self.fetcher.state == .idle) {
+        self.bg_window_fifo.enqueue_row(self.fetcher.consume());
+    }
+    return null;
+}
+fn dot_window(self: *PPU) ?u2 {
+    const scanline_y = self.internal_wy;
+    self.fetcher_tick(scanline_y);
+
+    if (self.bg_window_fifo.len > 0) {
+        const pixel = self.bg_window_fifo.dequeue();
+        self.put_pixel(pixel, self.scanline_pixels_drawn);
+        self.scanline_pixels_drawn += 1;
     } else if (self.fetcher.state == .idle) {
         self.bg_window_fifo.enqueue_row(self.fetcher.consume());
     }
 }
-fn dot_window(self: *PPU) void {
-    _ = self;
-}
-fn dot_sprite(self: *PPU) void {
-    _ = self;
+fn dot_sprite(self: *PPU) ?u2 {
+    if (self.bg_window_fifo.len != 8) {
+        if (self.dot_bg()) |_| unreachable;
+    } else if {
+
+    }
 }
 
-fn fetcher_tick(self: *PPU, scanline_x: u8, scanline_y: u8) void {
+fn fetcher_tick(self: *PPU, scanline_y: u8) void {
     switch (self.fetcher.state) {
         .fetch_tile => {
             if (self.fetcher.advance()) {
-                const x: u16 = scanline_x / 8;
+                const x: u16 = (self.fetcher.tile_x +% self.scx / 8) % 32;
                 const y: u16 = scanline_y / 8;
 
                 var tilemap_address: u16 = TILE_MAP_0_START;
@@ -356,8 +388,8 @@ fn fetcher_tick(self: *PPU, scanline_x: u8, scanline_y: u8) void {
 
                 const idx = x + y * 32;
                 self.fetcher.curr_tile = self.read_vram(tilemap_address + idx);
-
                 self.fetcher.state = .fetch_low;
+                self.fetcher.tile_x +%= 1;
             }
         },
         .fetch_low => {
@@ -414,25 +446,26 @@ fn signed_tile_index(base_addr: u16, offset: u8) u16 {
     return @bitCast(base_addr_signed +% signed_offset * 16);
 }
 
-fn put_pixel(self: *PPU, pixel: u2) void {
-    // Since we've already written to the "invisible" left part of the screen, we need to offset the scanline pixel.
-    const pixel_pos = @as(u16, self.scanline_pixels_drawn) + @as(u16, self.ly) * 160;
-    const colour =
-        if (self.lcdc.bg_window_enable == 1)
-            self.bgp.from_index(pixel)
-        else
-            self.bgp.from_index(0);
-    self.display[pixel_pos] = colour.rgba_8_8_8_8();
-    self.scanline_pixels_drawn += 1;
+fn put_pixel(self: *PPU, pixel: u2, x_coord: u8) void {
+    if (x_coord >= 8) {
+        const x = x_coord - 8;
+        const pixel_pos = @as(u16, x) + @as(u16, self.ly) * 160;
+        const colour =
+            if (self.lcdc.bg_window_enable == 1)
+                self.bgp.from_index(pixel)
+            else
+                self.bgp.from_index(0);
+        self.display[pixel_pos] = colour.rgba_8_8_8_8();
+    }
 }
 
 fn reset_scanline(self: *PPU) void {
     self.visible_sprites = .{};
-    self.scanline_pixels_consumed = 0;
     self.scanline_pixels_drawn = 0;
     self.bg_window_fifo = .{};
     self.sprite_fifo = .{};
     self.layer = .background;
+    self.fetcher = .{};
 }
 
 pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.mem.Allocator) ![]const u32 {

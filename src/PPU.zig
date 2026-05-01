@@ -30,6 +30,8 @@ pub const TILE_MAP_1_END = 0x9FFF;
 
 pub const OAM_START = 0xFE00;
 
+pub const LCD_WIDTH = 160;
+
 // Externally adressable registers
 lcdc: LCDControl = .{},
 stat: Status = @bitCast(@as(u8, 0)),
@@ -53,7 +55,7 @@ oam: []u8,
 vram: []u8,
 
 dots_per_frame: usize = 0,
-scanline_pixels_drawn: u8 = 0,
+lx: u8 = 0,
 pixels_to_discard: u3 = 0,
 visible_sprites: BoundedArray(ObjectAttribute, 10) = .{},
 internal_wy: u8 = 0,
@@ -105,7 +107,7 @@ const Fetcher = struct {
     wait: bool = false,
     buffer: [8]u2 = .{0} ** 8,
     curr_tile: u8 = 0,
-    tile_x: u8 = 0,
+    tile_x: u8 = 0xFF,
 
     pub fn consume(self: *Fetcher) [8]u2 {
         assert(self.state == .idle);
@@ -139,7 +141,6 @@ const FetcherBuffer = struct {
 const Layer = enum {
     background,
     window,
-    sprite,
 };
 
 const ObjectAttribute = packed struct(u32) {
@@ -243,16 +244,16 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                         self.visible_sprites.len < 10 and x_pos != 0)
                     {
                         self.visible_sprites.push(.{
-                            self.oam[i],
-                            self.oam[i + 1],
-                            self.oam[i + 2],
-                            @bitCast(self.oam[i + 3]),
+                            .x_pos = self.oam[i],
+                            .y_pos = self.oam[i + 1],
+                            .tile_idx = self.oam[i + 2],
+                            .flags = @bitCast(self.oam[i + 3]),
                         });
                     }
                 }
                 // TODO sorting network
                 const sort_func = struct {
-                    pub fn cmp(_: anytype, lhs_oa: ObjectAttribute, rhs_oa: ObjectAttribute) bool {
+                    pub fn cmp(_: void, lhs_oa: ObjectAttribute, rhs_oa: ObjectAttribute) bool {
                         return lhs_oa.x_pos >= rhs_oa.x_pos;
                     }
                 }.cmp;
@@ -263,9 +264,9 @@ pub fn dot(self: *PPU, bus: *Pins) void {
         },
         .draw => {
             if (self.lcdc.window_enable == 1 and self.has_ly_matched_wy) {
-                if (self.scanline_pixels_drawn == self.wx + 1 and self.layer != .window) {
+                if (self.lx == self.wx + 1 and self.layer != .window) {
                     self.layer = .window;
-                    self.fetcher = .{};
+                    self.fetcher = .{ .tile_x = 0 };
                     self.bg_window_fifo = .{};
                 }
             }
@@ -273,14 +274,13 @@ pub fn dot(self: *PPU, bus: *Pins) void {
             if (switch (self.layer) {
                 .background => self.dot_bg(),
                 .window => self.dot_window(),
-                .sprite => self.merge_sprite(self.dot_sprite(), self.dot_bg()),
             }) |pixel| {
-                self.put_pixel(pixel, self.scanline_pixels_drawn);
-                self.scanline_pixels_drawn += 1;
+                self.put_pixel(pixel, self.lx);
+                self.lx += 1;
             }
 
             self.dots_per_frame += 1;
-            if (self.scanline_pixels_drawn == 168) {
+            if (self.lx == LCD_WIDTH + 8) {
                 if (self.layer == .window) self.internal_wy += 1;
                 self.reset_scanline();
                 self.stat.mode = .hblank;
@@ -333,11 +333,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
 
 fn dot_bg(self: *PPU) ?u2 {
     const scanline_y = self.scy +% self.ly;
-    // Pre-decrement tile_x, since we want to render a chunk off-screen first.
-    // TODO find a cleaner way
-    self.fetcher.tile_x -%= 1;
     self.fetcher_tick(scanline_y);
-    self.fetcher.tile_x +%= 1;
 
     if (self.bg_window_fifo.len > 0) {
         const pixel = self.bg_window_fifo.dequeue();
@@ -356,38 +352,32 @@ fn dot_window(self: *PPU) ?u2 {
     self.fetcher_tick(scanline_y);
 
     if (self.bg_window_fifo.len > 0) {
-        const pixel = self.bg_window_fifo.dequeue();
-        self.put_pixel(pixel, self.scanline_pixels_drawn);
-        self.scanline_pixels_drawn += 1;
+        return self.bg_window_fifo.dequeue();
     } else if (self.fetcher.state == .idle) {
         self.bg_window_fifo.enqueue_row(self.fetcher.consume());
     }
+    return null;
 }
 fn dot_sprite(self: *PPU) ?u2 {
-    if (self.bg_window_fifo.len != 8) {
-        if (self.dot_bg()) |_| unreachable;
-    } else if {
-
-    }
+    _ = self;
 }
 
 fn fetcher_tick(self: *PPU, scanline_y: u8) void {
     switch (self.fetcher.state) {
         .fetch_tile => {
             if (self.fetcher.advance()) {
-                const x: u16 = (self.fetcher.tile_x +% self.scx / 8) % 32;
-                const y: u16 = scanline_y / 8;
+                const x: u5 = @truncate(self.fetcher.tile_x +% self.scx / 8);
+                const y: u5 = @truncate(scanline_y / 8);
 
-                var tilemap_address: u16 = TILE_MAP_0_START;
-                if (self.lcdc.bg_tilemap_area == 1 and self.layer != .window) {
-                    tilemap_address = TILE_MAP_1_START;
-                }
-                if (self.lcdc.window_tilemap_area == 1 and self.layer == .window) {
-                    tilemap_address = TILE_MAP_1_START;
-                }
+                const tilemap_address: u1 = if (self.layer == .background)
+                    self.lcdc.bg_tilemap_area
+                else
+                    self.lcdc.window_tilemap_area;
 
-                const idx = x + y * 32;
-                self.fetcher.curr_tile = self.read_vram(tilemap_address + idx);
+                const base_address: u16 = 0b1001100000000000;
+                const idx = base_address | (@as(u11, tilemap_address) << 10) | (@as(u10, y) << 5) | x;
+
+                self.fetcher.curr_tile = self.read_vram(idx);
                 self.fetcher.state = .fetch_low;
                 self.fetcher.tile_x +%= 1;
             }
@@ -461,7 +451,7 @@ fn put_pixel(self: *PPU, pixel: u2, x_coord: u8) void {
 
 fn reset_scanline(self: *PPU) void {
     self.visible_sprites = .{};
-    self.scanline_pixels_drawn = 0;
+    self.lx = 0;
     self.bg_window_fifo = .{};
     self.sprite_fifo = .{};
     self.layer = .background;

@@ -10,7 +10,7 @@ pub fn BoundedArray(T: type, max_size: comptime_int) type {
             self.len += 1;
         }
 
-        pub fn slice(self: *const @This()) []T {
+        pub fn slice(self: *@This()) []T {
             return self.buffer[0..self.len];
         }
     };

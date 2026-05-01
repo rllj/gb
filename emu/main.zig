@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
     while (!quit) {
         gb.tick_tcycle();
 
-        if (gb.ppu.dots_per_mode == 456) {
+        if (gb.ppu.dots_per_frame == 456) {
             _ = fps_capper.delay();
 
             {

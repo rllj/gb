@@ -57,13 +57,15 @@ vram: []u8,
 dots_per_frame: usize = 0,
 lx: u8 = 0,
 pixels_to_discard: u3 = 0,
-visible_sprites: BoundedArray(ObjectAttribute, 10) = .{},
+visible_sprites: BoundedArray(ObjectAttributes, 10) = .{},
 internal_wy: u8 = 0,
 has_ly_matched_wy: bool = false,
 fetcher: Fetcher = .{},
 bg_window_fifo: Fifo(PixelRow) = .{},
-sprite_fifo: Fifo(SpritePixelRow) = .{},
+obj_fifo: Fifo(PixelRow) = .{},
 layer: Layer = .background,
+is_fetching_obj: bool = false,
+current_sprite: ObjectAttributes = @bitCast(@as(u32, 0)),
 
 // TODO The PPU shouldn't own the display, of course
 display: [160 * 144]u32 = .{0x00} ** (160 * 144),
@@ -90,13 +92,14 @@ pub fn Fifo(T: type) type {
 
         fn enqueue_row(self: *Self, row: T) void {
             self.pixel_row = row;
-            self.len += 8;
+            self.len = 8;
         }
 
         pub fn dequeue(self: *Self) @typeInfo(T).array.child {
             const pixel = self.pixel_row[7];
             @memmove(self.pixel_row[1..], self.pixel_row[0..7]);
-            self.len -= 1;
+            self.pixel_row[0] = std.mem.zeroes(@typeInfo(T).array.child);
+            self.len -|= 1;
             return pixel;
         }
     };
@@ -110,7 +113,7 @@ const Fetcher = struct {
     tile_x: u8 = 0xFF,
 
     pub fn consume(self: *Fetcher) [8]u2 {
-        assert(self.state == .idle);
+        assert(self.state == .idle or self.state == .fetch_obj_high);
         self.state = .fetch_tile;
         return self.buffer;
     }
@@ -125,6 +128,10 @@ const Fetcher = struct {
         fetch_low,
         fetch_high,
         idle,
+
+        fetch_obj,
+        fetch_obj_low,
+        fetch_obj_high,
     };
 };
 
@@ -143,18 +150,18 @@ const Layer = enum {
     window,
 };
 
-const ObjectAttribute = packed struct(u32) {
+const ObjectAttributes = packed struct(u32) {
     y_pos: u8,
     x_pos: u8,
     tile_idx: u8,
     flags: Flags,
 
     const Flags = packed struct(u8) {
-        priority: bool,
-        y_flip: bool,
-        x_flip: bool,
-        dmg_palette: u1,
         cgb_reserved: u4,
+        dmg_palette: u1,
+        x_flip: bool,
+        y_flip: bool,
+        priority: bool,
     };
 };
 
@@ -236,7 +243,7 @@ pub fn dot(self: *PPU, bus: *Pins) void {
             self.dots_per_frame += 1;
             if (self.dots_per_frame == 80) {
                 var i: u8 = 0;
-                while (i < 40) : (i += 4) {
+                while (i < 160) : (i += 4) {
                     const y_pos = self.oam[i];
                     const x_pos = self.oam[i + 1];
                     if (y_pos != 0 and self.ly + 16 >= y_pos and
@@ -251,13 +258,14 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                         });
                     }
                 }
+                // TODO fix this shit
                 // TODO sorting network
                 const sort_func = struct {
-                    pub fn cmp(_: void, lhs_oa: ObjectAttribute, rhs_oa: ObjectAttribute) bool {
-                        return lhs_oa.x_pos >= rhs_oa.x_pos;
+                    pub fn cmp(_: void, lhs_oa: ObjectAttributes, rhs_oa: ObjectAttributes) bool {
+                        return lhs_oa.x_pos > rhs_oa.x_pos;
                     }
                 }.cmp;
-                std.sort.insertion(ObjectAttribute, self.visible_sprites.slice(), {}, sort_func);
+                std.sort.insertion(ObjectAttributes, self.visible_sprites.slice(), {}, sort_func);
                 self.pixels_to_discard = @truncate(self.scx);
                 self.stat.mode = .draw;
             }
@@ -271,12 +279,23 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                 }
             }
 
-            if (switch (self.layer) {
-                .background => self.dot_bg(),
-                .window => self.dot_window(),
-            }) |pixel| {
-                self.put_pixel(pixel, self.lx);
-                self.lx += 1;
+            if (!self.is_fetching_obj) {
+                if (switch (self.layer) {
+                    .background => self.dot_bg(),
+                    .window => self.dot_window(),
+                }) |bg_window_pixel| {
+                    const obj_pixel = self.obj_fifo.dequeue();
+                    self.put_pixel(self.merge_pixels(bg_window_pixel, obj_pixel), self.lx);
+                    self.lx += 1;
+                }
+                if (self.visible_sprites.last()) |sprite| {
+                    if (sprite.x_pos == self.lx) {
+                        self.current_sprite = self.visible_sprites.pop();
+                        self.is_fetching_obj = true;
+                    }
+                }
+            } else {
+                self.dot_sprite();
             }
 
             self.dots_per_frame += 1;
@@ -358,15 +377,34 @@ fn dot_window(self: *PPU) ?u2 {
     }
     return null;
 }
-fn dot_sprite(self: *PPU) ?u2 {
+fn dot_sprite(self: *PPU) void {
+    const scanline_y = (self.ly + 16) - self.current_sprite.y_pos;
+    if (self.bg_window_fifo.len == 0) {
+        self.fetcher_tick(scanline_y);
+        if (self.fetcher.state == .idle) {
+            self.bg_window_fifo.enqueue_row(self.fetcher.consume());
+        }
+    } else {
+        self.fetcher_tick(scanline_y);
+        if (self.fetcher.state == .idle) {
+            self.fetcher.wait = false;
+            self.fetcher.state = .fetch_obj;
+        }
+    }
+}
+
+fn merge_pixels(self: *PPU, bg_window_pixel: u2, obj_pixel: u2) u2 {
+    // TODO correct logic
     _ = self;
+    return if (obj_pixel == 0) bg_window_pixel else obj_pixel;
 }
 
 fn fetcher_tick(self: *PPU, scanline_y: u8) void {
     switch (self.fetcher.state) {
         .fetch_tile => {
             if (self.fetcher.advance()) {
-                const x: u5 = @truncate(self.fetcher.tile_x +% self.scx / 8);
+                const scroll = if (self.layer == .background) self.scx else 0;
+                const x: u5 = @truncate(self.fetcher.tile_x +% scroll / 8);
                 const y: u5 = @truncate(scanline_y / 8);
 
                 const tilemap_address: u1 = if (self.layer == .background)
@@ -384,45 +422,87 @@ fn fetcher_tick(self: *PPU, scanline_y: u8) void {
         },
         .fetch_low => {
             if (self.fetcher.advance()) {
-                const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
-                    1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
-                };
-                const y: u8 = scanline_y % 8;
-
-                const tile_data_idx = tile_data_base + y * 2;
-                const tile_data = self.read_vram(tile_data_idx);
-
-                for (0..8) |idx| {
-                    const i: u3 = @truncate(7 - idx);
-                    const bit: u2 = @truncate((tile_data >> i) & 1);
-                    self.fetcher.buffer[i] = bit;
-                }
-
+                self.fetch_tile_byte(scanline_y, .low);
                 self.fetcher.state = .fetch_high;
             }
         },
         .fetch_high => {
             if (self.fetcher.advance()) {
-                const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
-                    0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
-                    1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
-                };
-                const y: u8 = scanline_y % 8;
-
-                const tile_data_idx = tile_data_base + y * 2 + 1;
-                const tile_data = self.read_vram(tile_data_idx);
-
-                for (0..8) |idx| {
-                    const i: u3 = @truncate(7 - idx);
-                    const bit: u2 = @truncate((tile_data >> i) & 1);
-                    self.fetcher.buffer[i] |= bit << 1;
-                }
-
+                self.fetch_tile_byte(scanline_y, .high);
                 self.fetcher.state = .idle;
             }
         },
         .idle => {},
+
+        .fetch_obj => {
+            if (self.fetcher.advance()) {
+                self.fetcher.curr_tile = self.current_sprite.tile_idx;
+                self.fetcher.state = .fetch_obj_low;
+            }
+        },
+        .fetch_obj_low => {
+            if (self.fetcher.advance()) {
+                self.fetch_obj_byte(scanline_y, .low);
+                self.fetcher.state = .fetch_obj_high;
+            }
+        },
+        .fetch_obj_high => {
+            if (self.fetcher.advance()) {
+                self.fetch_obj_byte(scanline_y, .high);
+
+                self.obj_fifo.enqueue_row(self.fetcher.consume());
+                self.fetcher.tile_x -= 1;
+                self.fetcher.state = .fetch_tile;
+                self.is_fetching_obj = false;
+            }
+        },
+    }
+}
+
+fn fetch_tile_byte(
+    self: *PPU,
+    scanline_y: u8,
+    comptime low_or_high: enum { low, high },
+) void {
+    const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
+        0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
+        1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
+    };
+    const y: u8 = scanline_y % 8;
+
+    const tile_data_idx = tile_data_base + y * 2 + @intFromEnum(low_or_high);
+    const tile_data = self.read_vram(tile_data_idx);
+
+    for (0..8) |idx| {
+        const i: u3 = @truncate(7 - idx);
+        const bit: u2 = @truncate((tile_data >> i) & 1);
+        if (low_or_high == .low) {
+            self.fetcher.buffer[i] = bit;
+        } else {
+            self.fetcher.buffer[i] |= bit << 1;
+        }
+    }
+}
+
+fn fetch_obj_byte(
+    self: *PPU,
+    scanline_y: u8,
+    comptime low_or_high: enum { low, high },
+) void {
+    const tile_data_base = TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16;
+    const y: u8 = scanline_y % 8;
+
+    const tile_data_idx = tile_data_base + y * 2 + @intFromEnum(low_or_high);
+    const tile_data = self.read_vram(tile_data_idx);
+
+    for (0..8) |idx| {
+        const i: u3 = @truncate(7 - idx);
+        const bit: u2 = @truncate((tile_data >> i) & 1);
+        if (low_or_high == .low) {
+            self.fetcher.buffer[i] = bit;
+        } else {
+            self.fetcher.buffer[i] |= bit << 1;
+        }
     }
 }
 
@@ -453,7 +533,7 @@ fn reset_scanline(self: *PPU) void {
     self.visible_sprites = .{};
     self.lx = 0;
     self.bg_window_fifo = .{};
-    self.sprite_fifo = .{};
+    self.obj_fifo = .{};
     self.layer = .background;
     self.fetcher = .{};
 }
@@ -466,8 +546,10 @@ pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.m
     for (self.vram[tilemap_start..tilemap_end], 0..) |tile_idx, vert| {
         const row_x = vert % 32;
         const row_y = vert / 32;
-        const offset = TILE_DATA_START - 0x8000;
-        const from = offset + @as(usize, tile_idx) * 16;
+        const from = if (self.lcdc.bg_window_addressing_mode == 0)
+            signed_tile_index(TILE_DATA_MIDDLE, tile_idx) - 0x8000
+        else
+            (TILE_DATA_START - 0x8000) + @as(usize, tile_idx) * 16;
 
         for (0..8) |i| {
             const low = self.vram[from + i * 2];

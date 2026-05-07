@@ -62,10 +62,9 @@ internal_wy: u8 = 0,
 has_ly_matched_wy: bool = false,
 fetcher: Fetcher = .{},
 bg_window_fifo: Fifo(PixelRow) = .{},
-obj_fifo: Fifo(PixelRow) = .{},
+obj_fifo: Fifo(SpritePixelRow) = .{},
 layer: Layer = .background,
 is_fetching_obj: bool = false,
-current_sprite: ObjectAttributes = @bitCast(@as(u32, 0)),
 
 // TODO The PPU shouldn't own the display, of course
 display: [160 * 144]u32 = .{0x00} ** (160 * 144),
@@ -73,7 +72,11 @@ display: [160 * 144]u32 = .{0x00} ** (160 * 144),
 const PixelRow = [8]u2;
 
 const SpritePixelRow = [8]SpritePixel;
-const SpritePixel = struct {};
+const SpritePixel = struct {
+    color: u2 = 0,
+    palette: u1 = 0,
+    bg_priority: bool = false,
+};
 
 pub fn Fifo(T: type) type {
     return struct {
@@ -110,6 +113,7 @@ const Fetcher = struct {
     wait: bool = false,
     buffer: [8]u2 = .{0} ** 8,
     curr_tile: u8 = 0,
+    curr_sprite: ObjectAttributes = .{},
     tile_x: u8 = 0xFF,
 
     pub fn consume(self: *Fetcher) [8]u2 {
@@ -151,13 +155,13 @@ const Layer = enum {
 };
 
 const ObjectAttributes = packed struct(u32) {
-    y_pos: u8,
-    x_pos: u8,
-    tile_idx: u8,
-    flags: Flags,
+    y_pos: u8 = 0,
+    x_pos: u8 = 0,
+    tile_idx: u8 = 0,
+    flags: Flags = @bitCast(@as(u8, 0)),
 
     const Flags = packed struct(u8) {
-        cgb_reserved: u4,
+        cgb_reserved: u4 = 0,
         dmg_palette: u1,
         x_flip: bool,
         y_flip: bool,
@@ -246,23 +250,24 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                 while (i < 160) : (i += 4) {
                     const y_pos = self.oam[i];
                     const x_pos = self.oam[i + 1];
+                    const tile_idx = self.oam[i + 2];
+                    const flags: ObjectAttributes.Flags = @bitCast(self.oam[i + 3]);
                     if (y_pos != 0 and self.ly + 16 >= y_pos and
                         self.ly + 16 < y_pos + sprite_height and
                         self.visible_sprites.len < 10 and x_pos != 0)
                     {
                         self.visible_sprites.push(.{
-                            .x_pos = self.oam[i],
-                            .y_pos = self.oam[i + 1],
-                            .tile_idx = self.oam[i + 2],
-                            .flags = @bitCast(self.oam[i + 3]),
+                            .x_pos = x_pos,
+                            .y_pos = y_pos,
+                            .tile_idx = tile_idx,
+                            .flags = flags,
                         });
                     }
                 }
-                // TODO fix this shit
                 // TODO sorting network
                 const sort_func = struct {
                     pub fn cmp(_: void, lhs_oa: ObjectAttributes, rhs_oa: ObjectAttributes) bool {
-                        return lhs_oa.x_pos > rhs_oa.x_pos;
+                        return lhs_oa.x_pos >= rhs_oa.x_pos;
                     }
                 }.cmp;
                 std.sort.insertion(ObjectAttributes, self.visible_sprites.slice(), {}, sort_func);
@@ -290,7 +295,6 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                 }
                 if (self.visible_sprites.last()) |sprite| {
                     if (sprite.x_pos == self.lx) {
-                        self.current_sprite = self.visible_sprites.pop();
                         self.is_fetching_obj = true;
                     }
                 }
@@ -378,7 +382,7 @@ fn dot_window(self: *PPU) ?u2 {
     return null;
 }
 fn dot_sprite(self: *PPU) void {
-    const scanline_y = (self.ly + 16) - self.current_sprite.y_pos;
+    const scanline_y = self.ly;
     if (self.bg_window_fifo.len == 0) {
         self.fetcher_tick(scanline_y);
         if (self.fetcher.state == .idle) {
@@ -393,10 +397,22 @@ fn dot_sprite(self: *PPU) void {
     }
 }
 
-fn merge_pixels(self: *PPU, bg_window_pixel: u2, obj_pixel: u2) u2 {
-    // TODO correct logic
-    _ = self;
-    return if (obj_pixel == 0) bg_window_pixel else obj_pixel;
+fn merge_pixels(self: *PPU, bg_window_pixel: u2, obj_pixel: SpritePixel) Colour {
+    const bg_colour = if (self.lcdc.bg_window_enable == 1)
+        self.bgp.from_index(bg_window_pixel)
+    else
+        self.bgp.from_index(0);
+
+    if (self.lcdc.obj_enable == 0 or obj_pixel.color == 0) {
+        return bg_colour;
+    }
+
+    if (obj_pixel.bg_priority and bg_window_pixel != 0) {
+        return bg_colour;
+    }
+
+    const obj_palette = if (obj_pixel.palette == 0) self.obp0 else self.obp1;
+    return obj_palette.from_index(obj_pixel.color);
 }
 
 fn fetcher_tick(self: *PPU, scanline_y: u8) void {
@@ -436,7 +452,10 @@ fn fetcher_tick(self: *PPU, scanline_y: u8) void {
 
         .fetch_obj => {
             if (self.fetcher.advance()) {
-                self.fetcher.curr_tile = self.current_sprite.tile_idx;
+                const sprite = self.visible_sprites.pop();
+
+                self.fetcher.curr_tile = sprite.tile_idx;
+                self.fetcher.curr_sprite = sprite;
                 self.fetcher.state = .fetch_obj_low;
             }
         },
@@ -450,7 +469,18 @@ fn fetcher_tick(self: *PPU, scanline_y: u8) void {
             if (self.fetcher.advance()) {
                 self.fetch_obj_byte(scanline_y, .high);
 
-                self.obj_fifo.enqueue_row(self.fetcher.consume());
+                for (0..8) |i| {
+                    const color = self.fetcher.buffer[i];
+                    if (color != 0 and self.obj_fifo.pixel_row[i].color == 0) {
+                        self.obj_fifo.pixel_row[i] = .{
+                            .color = color,
+                            .palette = self.fetcher.curr_sprite.flags.dmg_palette,
+                            .bg_priority = self.fetcher.curr_sprite.flags.priority,
+                        };
+                    }
+                }
+                self.obj_fifo.len = 8;
+
                 self.fetcher.tile_x -= 1;
                 self.fetcher.state = .fetch_tile;
                 self.is_fetching_obj = false;
@@ -489,19 +519,33 @@ fn fetch_obj_byte(
     scanline_y: u8,
     comptime low_or_high: enum { low, high },
 ) void {
-    const tile_data_base = TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16;
-    const y: u8 = scanline_y % 8;
+    const sprite = self.fetcher.curr_sprite;
+    const sprite_height: u8 = if (self.lcdc.obj_size == 1) 16 else 8;
 
+    var y: u8 = (scanline_y + 16) - sprite.y_pos;
+    if (sprite.flags.y_flip) {
+        y = sprite_height - 1 - y;
+    }
+
+    var tile_id = self.fetcher.curr_tile;
+    if (self.lcdc.obj_size == 1) {
+        tile_id &= 0xFE;
+        if (y >= 8) {
+            tile_id |= 1;
+        }
+    }
+
+    const tile_data_base = TILE_DATA_START + @as(u16, tile_id) * 16;
     const tile_data_idx = tile_data_base + y * 2 + @intFromEnum(low_or_high);
     const tile_data = self.read_vram(tile_data_idx);
 
     for (0..8) |idx| {
-        const i: u3 = @truncate(7 - idx);
-        const bit: u2 = @truncate((tile_data >> i) & 1);
+        const shift = if (sprite.flags.x_flip) 7 - idx else idx;
+        const bit: u2 = @truncate((tile_data >> @truncate(shift)) & 1);
         if (low_or_high == .low) {
-            self.fetcher.buffer[i] = bit;
+            self.fetcher.buffer[idx] = bit;
         } else {
-            self.fetcher.buffer[i] |= bit << 1;
+            self.fetcher.buffer[idx] |= bit << 1;
         }
     }
 }
@@ -516,16 +560,13 @@ fn signed_tile_index(base_addr: u16, offset: u8) u16 {
     return @bitCast(base_addr_signed +% signed_offset * 16);
 }
 
-fn put_pixel(self: *PPU, pixel: u2, x_coord: u8) void {
+fn put_pixel(self: *PPU, colour: Colour, x_coord: u8) void {
     if (x_coord >= 8) {
         const x = x_coord - 8;
-        const pixel_pos = @as(u16, x) + @as(u16, self.ly) * 160;
-        const colour =
-            if (self.lcdc.bg_window_enable == 1)
-                self.bgp.from_index(pixel)
-            else
-                self.bgp.from_index(0);
-        self.display[pixel_pos] = colour.rgba_8_8_8_8();
+        if (x < 160) {
+            const pixel_pos = @as(u16, x) + @as(u16, self.ly) * 160;
+            self.display[pixel_pos] = colour.rgba_8_8_8_8();
+        }
     }
 }
 
@@ -549,7 +590,7 @@ pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.m
         const from = if (self.lcdc.bg_window_addressing_mode == 0)
             signed_tile_index(TILE_DATA_MIDDLE, tile_idx) - 0x8000
         else
-            (TILE_DATA_START - 0x8000) + @as(usize, tile_idx) * 16;
+            @as(usize, tile_idx) * 16;
 
         for (0..8) |i| {
             const low = self.vram[from + i * 2];
@@ -558,7 +599,7 @@ pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.m
             var colours: [8]u32 = undefined;
             for (0..8) |shift| {
                 const s: u3 = @truncate(7 - shift);
-                const colour_idx: u2 = (@as(u2, @truncate(high >> s)) & 1) << 1 |
+                const colour_idx = (@as(u2, @truncate(high >> s)) & 1) << 1 |
                     (@as(u2, @truncate(low >> s)) & 1);
                 const colour: Colour = self.bgp.from_index(colour_idx);
                 colours[shift] = colour.rgba_8_8_8_8();

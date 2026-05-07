@@ -30,7 +30,7 @@ pub fn main(init: std.process.Init) !void {
 
     try main_view.window.raise();
 
-    var gb: GB = try .init(init.gpa, @embedFile("roms/tetris.gb"));
+    var gb: GB = try .init(init.gpa, @embedFile("roms/dmg-acid2.gb"));
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };

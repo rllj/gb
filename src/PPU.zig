@@ -267,10 +267,11 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                 // TODO sorting network
                 const sort_func = struct {
                     pub fn cmp(_: void, lhs_oa: ObjectAttributes, rhs_oa: ObjectAttributes) bool {
-                        return lhs_oa.x_pos >= rhs_oa.x_pos;
+                        return lhs_oa.x_pos < rhs_oa.x_pos;
                     }
                 }.cmp;
                 std.sort.insertion(ObjectAttributes, self.visible_sprites.slice(), {}, sort_func);
+                std.mem.reverse(ObjectAttributes, self.visible_sprites.slice());
                 self.pixels_to_discard = @truncate(self.scx);
                 self.stat.mode = .draw;
             }
@@ -407,7 +408,7 @@ fn merge_pixels(self: *PPU, bg_window_pixel: u2, obj_pixel: SpritePixel) Colour 
         return bg_colour;
     }
 
-    if (obj_pixel.bg_priority and bg_window_pixel != 0) {
+    if (self.lcdc.bg_window_enable == 1 and obj_pixel.bg_priority and bg_window_pixel != 0) {
         return bg_colour;
     }
 

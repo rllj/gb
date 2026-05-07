@@ -193,7 +193,10 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
         PPU.SCX => self.ppu.scx = data,
         PPU.LY => {},
         PPU.LYC => self.ppu.lyc = data,
-        PPU.DMA => self.oam_transfer_cycle = 160,
+        PPU.DMA => {
+            self.oam_transfer_cycle = 160;
+            self.memory[addr] = data;
+        },
         PPU.BGP => self.ppu.bgp = @bitCast(data),
         PPU.OBP0 => self.ppu.obp0 = @bitCast(data),
         PPU.OBP1 => self.ppu.obp1 = @bitCast(data),

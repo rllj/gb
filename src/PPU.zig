@@ -383,14 +383,17 @@ fn dot_window(self: *PPU) ?u2 {
     return null;
 }
 fn dot_sprite(self: *PPU) void {
-    const scanline_y = self.ly;
+    const scanline_y = switch (self.layer) {
+        .background => self.scy + self.ly,
+        .window => self.internal_wy,
+    };
     if (self.bg_window_fifo.len == 0) {
         self.fetcher_tick(scanline_y);
         if (self.fetcher.state == .idle) {
             self.bg_window_fifo.enqueue_row(self.fetcher.consume());
         }
     } else {
-        self.fetcher_tick(scanline_y);
+        self.fetcher_tick(self.ly);
         if (self.fetcher.state == .idle) {
             self.fetcher.wait = false;
             self.fetcher.state = .fetch_obj;

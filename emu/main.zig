@@ -8,7 +8,6 @@ const GB = @import("GB").GB;
 const SCREEN_WIDTH = 640;
 const SCREEN_HEIGHT = 576;
 
-// TODO clean up
 pub fn main(init: std.process.Init) !void {
     defer sdl3.shutdown();
 
@@ -16,39 +15,21 @@ pub fn main(init: std.process.Init) !void {
     try sdl3.init(init_flags);
     defer sdl3.quit(init_flags);
 
-    const window, const renderer = try sdl3.render.Renderer.initWithWindow("Gameboy", SCREEN_WIDTH, SCREEN_HEIGHT, .{});
-    defer window.deinit();
-    defer renderer.deinit();
+    var main_view: View = try .init("Gameboy!", SCREEN_WIDTH, SCREEN_HEIGHT, 160, 144);
+    defer main_view.deinit();
 
-    const texture: sdl3.render.Texture = try renderer.createTexture(.packed_rgba_8_8_8_8, .streaming, 160, 144);
-    try texture.setScaleMode(.nearest);
+    var tile_view_0: View = try .init("Tilemap 0", 512, 512, 256, 256);
+    defer tile_view_0.deinit();
 
-    const window2, const renderer2 = try sdl3.render.Renderer.initWithWindow("Tilemap 0", 512, 512, .{});
-    defer window2.deinit();
-    defer renderer2.deinit();
+    var tile_view_1: View = try .init("Tilemap 1", 512, 512, 256, 256);
+    defer tile_view_1.deinit();
 
-    const window3, const renderer3 = try sdl3.render.Renderer.initWithWindow("Tilemap 1", 512, 512, .{});
-    defer window3.deinit();
-    defer renderer3.deinit();
-
-    const texture_debug: sdl3.render.Texture = try renderer2.createTexture(.packed_rgba_8_8_8_8, .streaming, 256, 256);
-    try texture_debug.setScaleMode(.nearest);
-
-    const texture_debug2: sdl3.render.Texture = try renderer3.createTexture(.packed_rgba_8_8_8_8, .streaming, 256, 256);
-    try texture_debug2.setScaleMode(.nearest);
-
-    try window.raise();
+    try main_view.window.raise();
 
     var gb: GB = try .init(init.gpa, @embedFile("roms/dmg-acid2.gb"));
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
-
-    var stdout = std.Io.File.stdout();
-    defer stdout.close(init.io);
-    var buffer: [4096]u8 = undefined;
-    var writer = stdout.writer(init.io, &buffer);
-    defer writer.flush() catch {};
 
     var quit = false;
     while (!quit) {
@@ -57,39 +38,15 @@ pub fn main(init: std.process.Init) !void {
         if (gb.ppu.dots_per_frame == 456) {
             _ = fps_capper.delay();
 
-            {
-                const data, _ = try texture.lock(null);
-                @memcpy(data, std.mem.sliceAsBytes(&gb.ppu.display));
-                texture.unlock();
+            const tile_data_0 = try gb.ppu.debug_generate_tilemap(0, init.gpa);
+            defer init.gpa.free(tile_data_0);
+            try tile_view_0.render(tile_data_0);
 
-                try renderer.clear();
-                try renderer.renderTexture(texture, null, null);
-                try renderer.present();
-            }
+            const tile_data_1 = try gb.ppu.debug_generate_tilemap(1, init.gpa);
+            defer init.gpa.free(tile_data_1);
+            try tile_view_1.render(tile_data_1);
 
-            {
-                const debug_data = try gb.ppu.debug_generate_tilemap(0, init.gpa);
-                defer init.gpa.free(debug_data);
-                const data, _ = try texture_debug.lock(null);
-                @memcpy(data, std.mem.sliceAsBytes(debug_data));
-                texture_debug.unlock();
-
-                try renderer2.clear();
-                try renderer2.renderTexture(texture_debug, null, null);
-                try renderer2.present();
-            }
-
-            {
-                const debug_data = try gb.ppu.debug_generate_tilemap(1, init.gpa);
-                defer init.gpa.free(debug_data);
-                const data, _ = try texture_debug2.lock(null);
-                @memcpy(data, std.mem.sliceAsBytes(debug_data));
-                texture_debug2.unlock();
-
-                try renderer3.clear();
-                try renderer3.renderTexture(texture_debug2, null, null);
-                try renderer3.present();
-            }
+            try main_view.render(&gb.ppu.display);
 
             while (sdl3.events.poll()) |event|
                 switch (event) {
@@ -129,28 +86,52 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-// pub fn main(init: std.process.Init) !void {
-//     var stdout = std.Io.File.stdout();
-//     defer stdout.close(init.io);
-//     var buffer: [4096]u8 = undefined;
-//     var writer = stdout.writer(init.io, &buffer);
-//     defer writer.flush() catch {};
-//
-//     const start = std.Io.Clock.now(.awake, init.io);
-//     var inst_cnt: usize = 0;
-//     const cartridge = @embedFile("roms/07-jr,jp,call,ret,rst.gb");
-//     var gb: GB = try .init(allocator, init.io, cartridge);
-//     defer gb.deinit(allocator);
-//     while (true) {
-//         gb.tick();
-//         inst_cnt += 1;
-//         if (gb.serial_input.items.len > 7 and
-//             (std.mem.eql(u8, gb.serial_input.items[gb.serial_input.items.len - 7 ..], "Passed\n") or
-//                 std.mem.eql(u8, gb.serial_input.items[gb.serial_input.items.len - 6 ..], "Failed")))
-//         {
-//             break;
-//         }
-//     }
-//     const elapsed = start.untilNow(init.io, .awake);
-//     std.debug.print("{} cycles in {}µs.\n", .{ inst_cnt, @divFloor(elapsed.nanoseconds, 1000) });
-// }
+const View = struct {
+    renderer: sdl3.render.Renderer,
+    window: sdl3.video.Window,
+    texture: sdl3.render.Texture,
+
+    pub fn init(
+        name: [:0]const u8,
+        screen_width: usize,
+        screen_height: usize,
+        texture_width: usize,
+        texture_height: usize,
+    ) !View {
+        const window, const renderer = try sdl3.render.Renderer.initWithWindow(
+            name,
+            screen_width,
+            screen_height,
+            .{},
+        );
+        const texture: sdl3.render.Texture = try renderer.createTexture(
+            .packed_rgba_8_8_8_8,
+            .streaming,
+            texture_width,
+            texture_height,
+        );
+        try texture.setScaleMode(.nearest);
+
+        return .{
+            .window = window,
+            .renderer = renderer,
+            .texture = texture,
+        };
+    }
+
+    pub fn deinit(self: *View) void {
+        self.texture.deinit();
+        self.renderer.deinit();
+        self.window.deinit();
+    }
+
+    pub fn render(self: *View, texture: []const u32) !void {
+        const data, _ = try self.texture.lock(null);
+        @memcpy(data, std.mem.sliceAsBytes(texture));
+        self.texture.unlock();
+
+        try self.renderer.clear();
+        try self.renderer.renderTexture(self.texture, null, null);
+        try self.renderer.present();
+    }
+};

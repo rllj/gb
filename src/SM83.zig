@@ -64,14 +64,6 @@ pub const IRMask = packed struct(u8) {
     pub fn to_byte(self: IRMask) u8 {
         return @bitCast(self);
     }
-
-    pub fn set(self: IRMask, mask: anytype) Pins {
-        var result: IRMask = self;
-        inline for (@typeInfo(@TypeOf(mask)).@"struct".fields) |field| {
-            @field(result, field.name) = @field(mask, field.name);
-        }
-        return result;
-    }
 };
 
 // Cheat a little by using unused instruction opcodes to handle interrupts.

@@ -18,9 +18,13 @@ pub fn main(init: std.process.Init) !void {
     var main_view: View = try .init("Gameboy!", SCREEN_WIDTH, SCREEN_HEIGHT, 160, 144);
     defer main_view.deinit();
 
+    const tile_data_0 = try allocator.alloc(u32, 256 * 256);
+    defer allocator.free(tile_data_0);
     var tile_view_0: View = try .init("Tilemap 0", 512, 512, 256, 256);
     defer tile_view_0.deinit();
 
+    const tile_data_1 = try allocator.alloc(u32, 256 * 256);
+    defer allocator.free(tile_data_1);
     var tile_view_1: View = try .init("Tilemap 1", 512, 512, 256, 256);
     defer tile_view_1.deinit();
 
@@ -38,12 +42,10 @@ pub fn main(init: std.process.Init) !void {
         if (gb.ppu.dots_per_frame == 456) {
             _ = fps_capper.delay();
 
-            const tile_data_0 = try gb.ppu.debug_generate_tilemap(0, init.gpa);
-            defer init.gpa.free(tile_data_0);
+            gb.ppu.debug_generate_tilemap(0, tile_data_0);
             try tile_view_0.render(tile_data_0);
 
-            const tile_data_1 = try gb.ppu.debug_generate_tilemap(1, init.gpa);
-            defer init.gpa.free(tile_data_1);
+            gb.ppu.debug_generate_tilemap(1, tile_data_1);
             try tile_view_1.render(tile_data_1);
 
             try main_view.render(&gb.ppu.display);

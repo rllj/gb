@@ -579,11 +579,10 @@ fn reset_scanline(self: *PPU) void {
     self.fetcher = .{};
 }
 
-pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.mem.Allocator) ![]const u32 {
+pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, colours: []u32) void {
     const tilemap_start = (if (tilemap == 0) TILE_MAP_0_START else TILE_MAP_1_START) - 0x8000;
     const tilemap_end = tilemap_start + 1024;
 
-    const map = try allocator.alloc(u32, 256 * 256);
     for (self.vram[tilemap_start..tilemap_end], 0..) |tile_idx, vert| {
         const row_x = vert % 32;
         const row_y = vert / 32;
@@ -596,18 +595,17 @@ pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, allocator: std.m
             const low = self.vram[from + i * 2];
             const high = self.vram[from + i * 2 + 1];
 
-            var colours: [8]u32 = undefined;
+            var row_colours: [8]u32 = undefined;
             for (0..8) |shift| {
                 const s: u3 = @truncate(7 - shift);
                 const colour_idx = (@as(u2, @truncate(high >> s)) & 1) << 1 |
                     (@as(u2, @truncate(low >> s)) & 1);
                 const colour: Colour = self.bgp.from_index(colour_idx);
-                colours[shift] = colour.rgba_8_8_8_8();
+                row_colours[shift] = colour.rgba_8_8_8_8();
             }
 
             const dst_start = row_y * 8 * 256 + i * 256 + row_x * 8;
-            @memcpy(map[dst_start .. dst_start + 8], &colours);
+            @memcpy(colours[dst_start .. dst_start + 8], &row_colours);
         }
     }
-    return map;
 }

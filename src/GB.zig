@@ -7,6 +7,7 @@ const PPU = @import("PPU.zig");
 const SM83 = @import("SM83.zig");
 const Pins = SM83.Pins;
 const Timer = @import("timer.zig").Timer;
+const Cartridge = @import("Cartridge.zig");
 
 const logger = @import("std").log.scoped(.gameboy);
 
@@ -21,6 +22,7 @@ timer_events: Timer.TimerEvents,
 oam_transfer_cycle: u8,
 cycles: usize = 0,
 buttons: Buttons = .{},
+cartridge: Cartridge,
 
 joyp: Joypad = .{},
 
@@ -136,13 +138,14 @@ fn mem_write(self: *GB, bus: Pins) Pins {
     switch (bus.abus) {
         0x0000...0x7FFF => {},
         0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
-        0xA000...0xBFFF => self.write_ram(bus.abus, bus.dbus),
+        0xA000...0xBFFF => self.cartridge.write_ram(bus.abus, bus.dbus),
         0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),
         0xE000...0xFDFF => self.write_ram(bus.abus - 0x2000, bus.dbus),
         0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
         0xFEA0...0xFEFF => {},
+        0xFF00...0xFF0E => self.write_io(bus.abus, bus.dbus),
         0xFF0F => return self.write_if(bus),
-        0xFF00...0xFF0E, 0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
+        0xFF10...0xFF7F => self.write_io(bus.abus, bus.dbus),
         0xFF80...0xFFFE => self.write_hram(bus.abus, bus.dbus),
         0xFFFF => self.write_ie(bus.dbus),
     }

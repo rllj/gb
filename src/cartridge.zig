@@ -1,3 +1,26 @@
+const Cartridge = @This();
+
+ptr: *anyopaque,
+vtable: *const VTable,
+
+pub const VTable = struct {
+    read_bank0: *const fn (*anyopaque, addr: u16) u8,
+    read_bank1: *const fn (*anyopaque, addr: u16) u8,
+    write_ram: *const fn (*anyopaque, addr: u16, data: u8) void,
+};
+
+pub fn write_ram(self: Cartridge, addr: u16, data: u8) void {
+    return self.write_ram(addr, data);
+}
+
+pub fn read_bank0(self: Cartridge, addr: u16) void {
+    return self.read_bank0(addr);
+}
+
+pub fn read_bank1(self: Cartridge, addr: u16) void {
+    return self.read_bank1(addr);
+}
+
 const Header = extern struct {
     entry: [4]u8,
     logo: [48]u8,
@@ -56,4 +79,36 @@ const NINTENDO_LOGO: [48]u8 = .{
     0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
     0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC,
     0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
+};
+
+pub const MBC1 = struct {
+    rom_banks: []const []u8,
+    ram_enable: bool,
+    rom_bank: u5,
+    ram_bank_or_rom_bank_upper: u2,
+    rom_ram_select: enum(u1) { rom, ram },
+
+    pub fn cartridge(self: *MBC1) Cartridge {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .read_bank0 = MBC1.read_bank0,
+                .read_bank1 = MBC1.read_bank1,
+                .write_ram = MBC1.write_ram,
+            },
+        };
+    }
+
+    pub fn read_bank0(ctx: *const anyopaque, addr: u16) u8 {
+        const self: *const MBC1 = @ptrCast(@alignCast(ctx));
+        return self.rom_banks[0][addr];
+    }
+
+    pub fn read_bank1(ctx: *const anyopaque, addr: u16) u8 {
+        const self: *const MBC1 = @ptrCast(@alignCast(ctx));
+        const bank = if (self.rom_bank == 0) 1 else self.rom_bank;
+        const upper_bits: u7 = if (self.rom_ram_select == .rom) self.ram_bank_or_rom_bank_upper else 0;
+        const rom = self.rom_banks[bank | upper_bits << 5];
+        return rom[addr];
+    }
 };

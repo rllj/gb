@@ -4,6 +4,7 @@ const allocator = std.heap.page_allocator;
 const sdl3 = @import("sdl3");
 
 const GB = @import("GB").GB;
+const Cartridge = GB.Cartridge;
 
 const SCREEN_WIDTH = 640;
 const SCREEN_HEIGHT = 576;
@@ -30,7 +31,10 @@ pub fn main(init: std.process.Init) !void {
 
     try main_view.window.raise();
 
-    var gb: GB = try .init(init.gpa, @embedFile("roms/tetris.gb"));
+    var cartridge: Cartridge = try .init(@embedFile("roms/tetris.gb"), allocator);
+    defer cartridge.deinit(allocator);
+
+    var gb: GB = try .init(init.gpa, cartridge);
     defer gb.deinit(init.gpa);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };

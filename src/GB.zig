@@ -7,7 +7,8 @@ const PPU = @import("PPU.zig");
 const SM83 = @import("SM83.zig");
 const Pins = SM83.Pins;
 const Timer = @import("timer.zig").Timer;
-const Cartridge = @import("Cartridge.zig");
+
+pub const Cartridge = @import("cartridge.zig").Cartridge;
 
 const logger = @import("std").log.scoped(.gameboy);
 
@@ -58,10 +59,9 @@ const Buttons = struct {
     b: bool = false,
 };
 
-pub fn init(allocator: Allocator, cartridge: []const u8) !GB {
+pub fn init(allocator: Allocator, cartridge: Cartridge) !GB {
     const memory: []u8 = try allocator.alloc(u8, 0x10000);
     @memset(memory, 0x00);
-    @memcpy(memory[0x0..0x8000], cartridge[0x0..0x8000]);
 
     memory[JOYP] = 0x3F;
 
@@ -69,6 +69,7 @@ pub fn init(allocator: Allocator, cartridge: []const u8) !GB {
         .sm83 = .{},
         .ppu = .{ .oam = memory[0xFE00..0xFEA0], .vram = memory[0x8000..0xA000] },
         .memory = memory,
+        .cartridge = cartridge,
         .bus = .{},
         .timer = @ptrCast(memory[Timer.SYSCLK_LO .. Timer.TAC + 1]),
         .timer_events = .{},
@@ -136,9 +137,9 @@ fn handle_cpu_bus(self: *GB, bus: Pins) Pins {
 
 fn mem_write(self: *GB, bus: Pins) Pins {
     switch (bus.abus) {
-        0x0000...0x7FFF => {},
+        0x0000...0x7FFF => self.cartridge.write(bus.abus, bus.dbus),
         0x8000...0x9FFF => self.write_vram(bus.abus, bus.dbus),
-        0xA000...0xBFFF => self.cartridge.write_ram(bus.abus, bus.dbus),
+        0xA000...0xBFFF => self.cartridge.write(bus.abus, bus.dbus),
         0xC000...0xDFFF => self.write_ram(bus.abus, bus.dbus),
         0xE000...0xFDFF => self.write_ram(bus.abus - 0x2000, bus.dbus),
         0xFE00...0xFE9F => self.write_oam(bus.abus, bus.dbus),
@@ -222,9 +223,9 @@ fn write_ie(self: *GB, data: u8) void {
 fn mem_read(self: *GB, bus: Pins) Pins {
     return switch (bus.abus) {
         0x0000...0x00FF => self.read_bootrom(bus),
-        0x0100...0x7FFF => self.read_ram(bus),
+        0x0100...0x7FFF => .{ .dbus = self.cartridge.read(bus.abus) },
         0x8000...0x9FFF => self.read_vram(bus),
-        0xA000...0xBFFF => self.read_ram(bus),
+        0xA000...0xBFFF => .{ .dbus = self.cartridge.read(bus.abus) },
         0xC000...0xDFFF => self.read_ram(bus),
         0xE000...0xFDFF => self.read_ram(bus.set(.{ .abus = bus.abus - 0x2000 })),
         0xFE00...0xFE9F => self.read_oam(bus),
@@ -251,12 +252,12 @@ fn read_hram(self: *GB, bus: Pins) Pins {
     return bus.set(.{ .dbus = self.memory[bus.abus] });
 }
 
-fn read_bootrom(self: *const GB, bus: Pins) Pins {
+fn read_bootrom(self: *GB, bus: Pins) Pins {
     if (self.oam_transfer_cycle != 0) return bus;
     if (self.memory[BANK] & 1 == 0) {
         return bus.set(.{ .dbus = bootrom[bus.abus] });
     } else {
-        return bus.set(.{ .dbus = self.memory[bus.abus] });
+        return bus.set(.{ .dbus = self.cartridge.read(bus.abus) });
     }
 }
 

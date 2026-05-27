@@ -16,21 +16,26 @@ pub const Cartridge = union(enum) {
 
         std.debug.print("{f}\n", .{header});
 
-        const cart_mem = try allocator.dupe(u8, game);
+        const num_ram_banks: u5 = switch (header.ram_size) {
+            0, 1 => 0,
+            2 => 1,
+            3 => 4,
+            4 => 16,
+            5 => 8,
+            else => unreachable,
+        };
+        const ram_size_bytes = RAM_BANK_SIZE * @as(u21, num_ram_banks);
+
+        const cart_mem = try allocator.alloc(u8, game.len + ram_size_bytes);
+        @memcpy(cart_mem[0..game.len], game);
+
         assert(header.cart_type != .ROM_ONLY or cart_mem.len == 0x8000);
         return switch (header.cart_type) {
             .ROM_ONLY => .{ .no_mbc = .{ .cart_mem = cart_mem } },
             .MBC1, .@"MBC1+RAM", .@"MBC1+RAM+BATTERY" => .{ .mbc1 = .{
                 .cart_mem = cart_mem,
                 .num_rom_banks = @as(u9, 2) << @truncate(header.rom_size),
-                .num_ram_banks = switch (header.ram_size) {
-                    0, 1 => 0,
-                    2 => 1,
-                    3 => 4,
-                    4 => 16,
-                    5 => 8,
-                    else => unreachable,
-                },
+                .num_ram_banks = num_ram_banks,
             } },
             else => unreachable,
         };
@@ -80,26 +85,31 @@ pub const MBC1 = struct {
     pub fn read(self: *MBC1, addr: u16) u8 {
         const rom_size_bytes = ROM_BANK_SIZE * @as(u21, self.num_rom_banks);
         const ram_size_bytes = RAM_BANK_SIZE * @as(u21, self.num_ram_banks);
+        const ram_start = @as(u21, self.num_rom_banks) * ROM_BANK_SIZE;
         return switch (addr) {
             0x0000...0x3FFF => self.cart_mem[self.rom_addr_bank0(addr) % rom_size_bytes],
             0x4000...0x7FFF => self.cart_mem[self.rom_addr(addr) % rom_size_bytes],
             0xA000...0xBFFF => {
                 if (!self.ram_enable) return 0xFF;
-                return self.cart_mem[self.ram_addr(addr) % ram_size_bytes];
+                return self.cart_mem[ram_start + self.ram_offset(addr) % ram_size_bytes];
             },
             else => unreachable,
         };
     }
 
     pub fn write(self: *MBC1, addr: u16, data: u8) void {
-        const ram_size_bytes = 8 * 1024 * @as(u21, self.num_ram_banks);
+        const ram_size_bytes = RAM_BANK_SIZE * @as(u21, self.num_ram_banks);
+        const ram_start = @as(u21, self.num_rom_banks) * ROM_BANK_SIZE;
         switch (addr) {
             0x0000...0x1FFF => self.ram_enable = (data & 0xF) == 0xA and self.num_ram_banks > 0,
-            0x2000...0x3FFF => self.rom_bank = @truncate(@max(1, data)),
+            0x2000...0x3FFF => {
+                const trunc: u5 = @truncate(data);
+                self.rom_bank = @max(1, trunc);
+            },
             0x4000...0x5FFF => self.bank_upper = @truncate(data),
             0x6000...0x7FFF => self.bank_upper_mode = @as(u1, @truncate(data)),
             0xA000...0xBFFF => if (self.ram_enable) {
-                self.cart_mem[self.ram_addr(addr) % ram_size_bytes] = data;
+                self.cart_mem[ram_start + self.ram_offset(addr) % ram_size_bytes] = data;
             },
             else => unreachable,
         }
@@ -120,10 +130,9 @@ pub const MBC1 = struct {
         return build_bitstring(u21, .{ self.bank_upper, bank_num, addr_low14 });
     }
 
-    fn ram_addr(self: *MBC1, addr: u16) u21 {
+    fn ram_offset(self: *MBC1, addr: u16) u15 {
         const addr_low13: u13 = @truncate(addr);
-        const ram_start = @as(u21, self.num_rom_banks) * ROM_BANK_SIZE;
-        return ram_start + build_bitstring(u15, .{
+        return build_bitstring(u15, .{
             self.bank_upper_mode * self.bank_upper,
             addr_low13,
         });

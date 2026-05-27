@@ -1,5 +1,6 @@
 const std = @import("std");
-const allocator = std.heap.page_allocator;
+const Io = std.Io;
+const t = std.testing;
 
 const sdl3 = @import("sdl3");
 
@@ -10,6 +11,9 @@ const SCREEN_WIDTH = 640;
 const SCREEN_HEIGHT = 576;
 
 pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const io = init.io;
+
     defer sdl3.shutdown();
 
     const init_flags = sdl3.InitFlags{ .video = true };
@@ -19,23 +23,31 @@ pub fn main(init: std.process.Init) !void {
     var main_view: View = try .init("Gameboy!", SCREEN_WIDTH, SCREEN_HEIGHT, 160, 144);
     defer main_view.deinit();
 
-    const tile_data_0 = try allocator.alloc(u32, 256 * 256);
-    defer allocator.free(tile_data_0);
+    const tile_data_0 = try arena.alloc(u32, 256 * 256);
     var tile_view_0: View = try .init("Tilemap 0", 512, 512, 256, 256);
-    defer tile_view_0.deinit();
 
-    const tile_data_1 = try allocator.alloc(u32, 256 * 256);
-    defer allocator.free(tile_data_1);
+    const tile_data_1 = try arena.alloc(u32, 256 * 256);
     var tile_view_1: View = try .init("Tilemap 1", 512, 512, 256, 256);
-    defer tile_view_1.deinit();
 
     try main_view.window.raise();
 
-    var cartridge: Cartridge = try .init(@embedFile("roms/tetris.gb"), allocator);
-    defer cartridge.deinit(allocator);
+    var args_iter = init.minimal.args.iterate();
+    _ = args_iter.skip();
 
-    var gb: GB = try .init(init.gpa, cartridge);
-    defer gb.deinit(init.gpa);
+    const rom = if (args_iter.next()) |rom_path|
+        try Io.Dir.cwd().readFileAlloc(
+            io,
+            rom_path,
+            arena,
+            .limited(64 * 1024 * 1024),
+        )
+    else
+        @embedFile("roms/zelda.gb");
+
+    var cartridge: Cartridge = try .init(rom, arena);
+    defer cartridge.deinit(arena);
+
+    var gb: GB = try .init(arena, cartridge);
 
     var fps_capper = sdl3.extras.FramerateCapper(f32){ .mode = .{ .limited = 60 } };
 

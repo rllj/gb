@@ -96,13 +96,6 @@ pub fn tick_mcycle(self: *GB) void {
     }
 }
 
-pub fn tick_inst(self: *GB) void {
-    while (true) {
-        self.tick_mcycle();
-        if (self.bus.m1 == 1 and self.bus.prefix_cb == 0) return;
-    }
-}
-
 fn cycle_cpu(self: *GB) void {
     const prev_timer = self.timer_from_mmio();
 
@@ -118,10 +111,10 @@ fn cycle_cpu(self: *GB) void {
     }
 
     if (self.oam_transfer_cycle != 0) {
-        const offset: u16 = 160 - self.oam_transfer_cycle;
-        const source: u16 = @as(u16, self.memory[PPU.DMA]) << 8 | offset;
-        const dest: u16 = PPU.OAM_START + offset;
-        self.memory[dest] = self.memory[source];
+        const oam_addr: u16 = 160 - self.oam_transfer_cycle;
+        const source: u16 = @as(u16, self.memory[PPU.DMA]) << 8 | oam_addr;
+        const data = if (source < 0x8000) self.cartridge.read(source) else self.memory[source];
+        self.ppu.oam[oam_addr] = data;
         self.oam_transfer_cycle -= 1;
     }
 }
@@ -223,9 +216,9 @@ fn write_ie(self: *GB, data: u8) void {
 fn mem_read(self: *GB, bus: Pins) Pins {
     return switch (bus.abus) {
         0x0000...0x00FF => self.read_bootrom(bus),
-        0x0100...0x7FFF => .{ .dbus = self.cartridge.read(bus.abus) },
+        0x0100...0x7FFF => bus.set(.{ .dbus = self.cartridge.read(bus.abus) }),
         0x8000...0x9FFF => self.read_vram(bus),
-        0xA000...0xBFFF => .{ .dbus = self.cartridge.read(bus.abus) },
+        0xA000...0xBFFF => bus.set(.{ .dbus = self.cartridge.read(bus.abus) }),
         0xC000...0xDFFF => self.read_ram(bus),
         0xE000...0xFDFF => self.read_ram(bus.set(.{ .abus = bus.abus - 0x2000 })),
         0xFE00...0xFE9F => self.read_oam(bus),

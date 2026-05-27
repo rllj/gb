@@ -184,9 +184,8 @@ pub fn tick(cpu: *SM83, input_bus: Pins) Pins {
 
         // STOP
         inst_state(0x10, 0) => {
-            //TODO
-            // Is apparently not used in any licensed ROMs, low priority to implement.
-            unreachable;
+            // TODO Is apparently not used in any licensed ROMs, low priority to implement.
+            bus = cpu.fetch_and_decode(bus);
         },
 
         // zig fmt: off

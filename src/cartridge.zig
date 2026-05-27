@@ -2,7 +2,10 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
-const BANK_SIZE_BYTES = 16 * 1024;
+const build_bitstring = @import("common.zig").build_bitstring;
+
+const ROM_BANK_SIZE = 0x4000;
+const RAM_BANK_SIZE = 0x2000;
 
 pub const Cartridge = union(enum) {
     no_mbc: NoMBC,
@@ -10,13 +13,18 @@ pub const Cartridge = union(enum) {
 
     pub fn init(game: []const u8, allocator: Allocator) !Cartridge {
         const header: *const Header = @ptrCast(@alignCast(game[0x100..0x150]));
-        const rom_size = @as(u20, header.rom_size) * 2 * BANK_SIZE_BYTES;
-        const ram_size = @as(u20, header.ram_size) * 2 * BANK_SIZE_BYTES;
+
+        std.debug.print("{f}\n", .{header});
 
         const cart_mem = try allocator.dupe(u8, game);
+        assert(header.cart_type != .ROM_ONLY or cart_mem.len == 0x8000);
         return switch (header.cart_type) {
             .ROM_ONLY => .{ .no_mbc = .{ .cart_mem = cart_mem } },
-            .MBC1 => .{ .mbc1 = .{ .cart_mem = cart_mem, .rom_size = rom_size, .ram_size = ram_size } },
+            .MBC1, .@"MBC1+RAM", .@"MBC1+RAM+BATTERY" => .{ .mbc1 = .{
+                .cart_mem = cart_mem,
+                .num_rom_banks = header.rom_size,
+                .num_ram_banks = header.ram_size,
+            } },
             else => unreachable,
         };
     }
@@ -41,7 +49,7 @@ pub const Cartridge = union(enum) {
 };
 
 const NoMBC = struct {
-    cart_mem: []u8,
+    cart_mem: []const u8,
 
     pub fn read(self: *const NoMBC, addr: u16) u8 {
         assert(addr < 0x8000);
@@ -54,42 +62,21 @@ const NoMBC = struct {
 pub const MBC1 = struct {
     cart_mem: []u8,
 
-    rom_size: u20,
-    ram_size: u20,
+    num_rom_banks: u8,
+    num_ram_banks: u8,
 
     ram_enable: bool = false,
     rom_bank: u5 = 0,
-    ram_bank_or_rom_bank_upper: u2 = 0,
-    rom_ram_select: enum(u1) { rom, ram } = .rom,
+    bank_upper: u2 = 0,
+    bank_upper_mode: u1 = 0,
 
     pub fn read(self: *MBC1, addr: u16) u8 {
-        switch (addr) {
-            0x0000...0x3FFF => {
-                var bits: u20 = 0;
-                bits |= addr & 0x03FF;
-                return if (self.rom_ram_select == .rom)
-                    self.read_rom_bank(0, addr)
-                else
-                    0xFF;
-            },
-            0x4000...0x7FFF => {
-                const bank_num = if (self.rom_bank == 0) 1 else self.rom_bank;
-                return self.read_rom_bank(bank_num, addr);
-            },
-            0xA000...0xBFFF => {
-                if (!self.ram_enable) return 0xFF;
-                return self.read_ram(addr);
-            },
+        return switch (addr) {
+            0x0000...0x3FFF => self.cart_mem[self.rom_addr_bank0(addr)],
+            0x4000...0x7FFF => self.cart_mem[self.rom_addr(addr)],
+            0xA000...0xBFFF => self.cart_mem[self.ram_addr(addr)],
             else => unreachable,
-        }
-    }
-
-    fn read_rom_bank(self: *MBC1, bank_number: u8, addr: u16) u8 {
-        return self.cart_mem[@as(u20, bank_number) * BANK_SIZE_BYTES + addr % BANK_SIZE_BYTES];
-    }
-
-    fn read_ram(self: *MBC1, addr: u16) u8 {
-        return self.cart_mem[self.rom_size + addr - 0xA000];
+        };
     }
 
     pub fn write(self: *MBC1, addr: u16, data: u8) void {
@@ -100,13 +87,48 @@ pub const MBC1 = struct {
                 break :blk if (trunc == 0) 1 else trunc;
             },
             0x4000...0x5FFF => {
-                self.ram_bank_or_rom_bank_upper = @truncate(data);
+                self.bank_upper = @truncate(data);
             },
             0x6000...0x7FFF => {
-                self.rom_ram_select = @enumFromInt(@as(u1, @truncate(data)));
+                self.bank_upper_mode = @as(u1, @truncate(data));
             },
+            0xA000...0xBFFF => self.cart_mem[self.ram_addr(addr)] = data,
             else => unreachable,
         }
+    }
+
+    fn rom_addr_bank0(self: *MBC1, addr: u16) u21 {
+        const addr_low14: u14 = @truncate(addr);
+        return build_bitstring(u21, .{
+            self.bank_upper_mode * self.bank_upper,
+            @as(u5, 0),
+            addr_low14,
+        });
+    }
+
+    fn rom_addr(self: *MBC1, addr: u16) u21 {
+        const addr_low14: u14 = @truncate(addr);
+        const bank_num = if (self.rom_bank == 0) 1 else self.rom_bank;
+        return build_bitstring(u21, .{ self.bank_upper, bank_num, addr_low14 });
+    }
+
+    fn ram_addr(self: *MBC1, addr: u16) u21 {
+        if (!self.ram_enable) return 0xFF;
+        const addr_low13: u13 = @truncate(addr);
+        const ram_start = @as(u21, self.num_rom_banks) * ROM_BANK_SIZE;
+        return ram_start + build_bitstring(u15, .{
+            self.bank_upper_mode * self.bank_upper,
+            addr_low13,
+        });
+    }
+
+    fn read_ram(self: *MBC1, bank_number: u8, addr: u16) u8 {
+        const ram_begin = self.num_rom_banks * ROM_BANK_SIZE;
+        return self.cart_mem[ram_begin + bank_number * RAM_BANK_SIZE + addr - 0xA000];
+    }
+
+    fn write_ram(self: *MBC1, addr: u16, data: u8) void {
+        self.cart_mem[self.rom_size + addr - 0xA000] = data;
     }
 };
 
@@ -160,6 +182,38 @@ const Header = extern struct {
         HuC3 = 0xFE,
         @"HuC1+RAM+BATTERY" = 0xFF,
     };
+
+    pub fn format(self: Header, w: *std.Io.Writer) !void {
+        try w.print(
+            \\entry = {any},
+            \\logo = {any},
+            \\title = {s},
+            \\new_licensee = {any},
+            \\sgb = {},
+            \\cart_type = {s},
+            \\rom_size = {},
+            \\ram_size = {},
+            \\destination = {s},
+            \\old_licensee = {},
+            \\rom_version = {},
+            \\header_checksum = {},
+            \\global_checksum = {},
+        , .{
+            self.entry,
+            self.logo,
+            self.title[0 .. std.mem.indexOfScalar(u8, &self.title, 0) orelse 16],
+            self.new_licensee,
+            self.sgb,
+            @tagName(self.cart_type),
+            self.rom_size,
+            self.ram_size,
+            @tagName(self.destination),
+            self.old_licensee,
+            self.rom_version,
+            self.header_checksum,
+            self.global_checksum,
+        });
+    }
 };
 const NINTENDO_LOGO: [48]u8 = .{
     0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,

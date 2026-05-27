@@ -294,11 +294,9 @@ pub fn dot(self: *PPU, bus: *Pins) void {
                     self.put_pixel(self.merge_pixels(bg_window_pixel, obj_pixel), self.lx);
                     self.lx += 1;
                 }
-                if (self.visible_sprites.last()) |sprite| {
-                    if (sprite.x_pos == self.lx) {
-                        self.is_fetching_obj = true;
-                    }
-                }
+                if (self.visible_sprites.last()) |sprite| if (sprite.x_pos == self.lx) {
+                    self.is_fetching_obj = true;
+                };
             } else {
                 self.dot_sprite();
             }
@@ -384,7 +382,7 @@ fn dot_window(self: *PPU) ?u2 {
 }
 fn dot_sprite(self: *PPU) void {
     const scanline_y = switch (self.layer) {
-        .background => self.scy + self.ly,
+        .background => self.scy +% self.ly,
         .window => self.internal_wy,
     };
     if (self.bg_window_fifo.len == 0) {
@@ -465,13 +463,13 @@ fn fetcher_tick(self: *PPU, scanline_y: u8) void {
         },
         .fetch_obj_low => {
             if (self.fetcher.advance()) {
-                self.fetch_obj_byte(scanline_y, .low);
+                self.fetch_obj_byte(.low);
                 self.fetcher.state = .fetch_obj_high;
             }
         },
         .fetch_obj_high => {
             if (self.fetcher.advance()) {
-                self.fetch_obj_byte(scanline_y, .high);
+                self.fetch_obj_byte(.high);
 
                 for (0..8) |i| {
                     const color = self.fetcher.buffer[i];
@@ -498,14 +496,18 @@ fn fetch_tile_byte(
     scanline_y: u8,
     comptime low_or_high: enum { low, high },
 ) void {
-    const tile_data_base = switch (self.lcdc.bg_window_addressing_mode) {
-        0 => signed_tile_index(TILE_DATA_MIDDLE, self.fetcher.curr_tile),
-        1 => TILE_DATA_START + @as(u16, self.fetcher.curr_tile) * 16,
-    };
-    const y: u8 = scanline_y % 8;
+    const tile_id = self.fetcher.curr_tile;
 
-    const tile_data_idx = tile_data_base + y * 2 + @intFromEnum(low_or_high);
-    const tile_data = self.read_vram(tile_data_idx);
+    // https://dtabacaru.com/pandocs/Rendering_Internals.html#get-tile-row-low
+    const addr = build_bitstring(u16, .{
+        @as(u3, 0b100),
+        ~@intFromBool(((self.lcdc.bg_window_addressing_mode == 1) or (tile_id & 0x80 != 0))),
+        tile_id,
+        @as(u3, @truncate(scanline_y)),
+        @intFromEnum(low_or_high),
+    });
+
+    const tile_data = self.read_vram(addr);
 
     for (0..8) |idx| {
         const i: u3 = @truncate(7 - idx);
@@ -520,28 +522,26 @@ fn fetch_tile_byte(
 
 fn fetch_obj_byte(
     self: *PPU,
-    scanline_y: u8,
-    comptime low_or_high: enum { low, high },
+    comptime low_or_high: enum(u1) { low, high },
 ) void {
     const sprite = self.fetcher.curr_sprite;
-    const sprite_height: u8 = if (self.lcdc.obj_size == 1) 16 else 8;
 
-    var y: u8 = (scanline_y + 16) - sprite.y_pos;
-    if (sprite.flags.y_flip) {
-        y = sprite_height - 1 - y;
-    }
+    const tile_id_upper: u7 = @truncate(self.fetcher.curr_tile >> 1);
+    const sprite_y = (self.ly + 16) - sprite.y_pos;
+    const tile_id_low_bit: u1 = if (self.lcdc.obj_size == 1)
+        @intFromBool(sprite_y >= 8) ^ @intFromBool(sprite.flags.y_flip)
+    else
+        @truncate(self.fetcher.curr_tile);
 
-    var tile_id = self.fetcher.curr_tile;
-    if (self.lcdc.obj_size == 1) {
-        tile_id &= 0xFE;
-        if (y >= 8) {
-            tile_id |= 1;
-        }
-    }
-
-    const tile_data_base = TILE_DATA_START + @as(u16, tile_id) * 16;
-    const tile_data_idx = tile_data_base + y * 2 + @intFromEnum(low_or_high);
-    const tile_data = self.read_vram(tile_data_idx);
+    // https://dtabacaru.com/pandocs/Rendering_Internals.html#get-tile-row-low
+    const addr = build_bitstring(u16, .{
+        @as(u4, 0b1000),
+        tile_id_upper,
+        tile_id_low_bit,
+        @as(u3, @truncate(if (sprite.flags.y_flip) ~sprite_y else sprite_y)),
+        @intFromEnum(low_or_high),
+    });
+    const tile_data = self.read_vram(addr);
 
     for (0..8) |idx| {
         const shift = if (sprite.flags.x_flip) 7 - idx else idx;
@@ -579,8 +579,56 @@ fn reset_scanline(self: *PPU) void {
     self.lx = 0;
     self.bg_window_fifo = .{};
     self.obj_fifo = .{};
+    self.is_fetching_obj = false;
     self.layer = .background;
     self.fetcher = .{};
+}
+
+fn build_bitstring(comptime T: type, substrings: anytype) T {
+    comptime switch (@typeInfo(T)) {
+        .int => |info| if (info.signedness != .unsigned)
+            @compileError("Bitstring must be an unsigned integer"),
+        else => @compileError("Bitstring must be an unsigned integer"),
+    };
+
+    const ArgsType = @TypeOf(substrings);
+    const fields_info = switch (@typeInfo(ArgsType)) {
+        .@"struct" => |s| s.fields,
+        else => @compileError("expected tuple or struct argument, found " ++ @typeName(ArgsType)),
+    };
+
+    comptime {
+        var bits = 0;
+        for (fields_info) |field| {
+            bits += switch (@typeInfo(field.type)) {
+                .int => |info| if (info.signedness == .unsigned) info.bits else @compileError("all arguments must be unsigned integers"),
+                else => @compileError("all arguments must be unsigned integers"),
+            };
+        }
+        if (bits != @typeInfo(T).int.bits) {
+            @compileError(std.fmt.comptimePrint(
+                "substrings bit length must add up to the bitstrings bit length.\nTotal substring length: {d}\nBitstring length: {d}\n",
+                .{ bits, @typeInfo(T).int.bits },
+            ));
+        }
+    }
+
+    const Packed = comptime blk: {
+        var names: [fields_info.len][]const u8 = undefined;
+        var types: [fields_info.len]type = undefined;
+        for (fields_info, 0..) |field, i| {
+            names[fields_info.len - 1 - i] = field.name;
+            types[fields_info.len - 1 - i] = field.type;
+        }
+        break :blk @Struct(.@"packed", T, &names, &types, &@splat(std.builtin.Type.StructField.Attributes{}));
+    };
+
+    var result: Packed = undefined;
+    inline for (@typeInfo(Packed).@"struct".fields) |field| {
+        @field(result, field.name) = @field(substrings, field.name);
+    }
+
+    return @bitCast(result);
 }
 
 pub fn debug_generate_tilemap(self: *PPU, comptime tilemap: u1, colours: []u32) void {

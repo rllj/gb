@@ -18,8 +18,8 @@ sm83: SM83,
 ppu: PPU,
 bus: Pins,
 memory: []u8,
-timer: *Timer,
-timer_events: Timer.TimerEvents,
+timer: Timer,
+timer_events: Timer.TimerEvents = .{},
 oam_transfer_cycle: u8,
 cycles: usize = 0,
 buttons: Buttons = .{},
@@ -71,8 +71,7 @@ pub fn init(allocator: Allocator, cartridge: Cartridge) !GB {
         .memory = memory,
         .cartridge = cartridge,
         .bus = .{},
-        .timer = @ptrCast(memory[Timer.SYSCLK_LO .. Timer.TAC + 1]),
-        .timer_events = .{},
+        .timer = .{},
         .oam_transfer_cycle = 0,
     };
 }
@@ -87,6 +86,15 @@ pub fn tick_tcycle(self: *GB) void {
         self.cycle_cpu();
     }
 
+    const prev_timer = self.timer;
+    self.timer_events = self.timer.tick(
+        prev_timer,
+        self.bus,
+    );
+    if (self.timer_events.overflow == true) {
+        self.bus.int.timer = 1;
+    }
+
     self.cycles +%= 1;
 }
 
@@ -97,18 +105,8 @@ pub fn tick_mcycle(self: *GB) void {
 }
 
 fn cycle_cpu(self: *GB) void {
-    const prev_timer = self.timer_from_mmio();
-
     const bus = self.sm83.tick(self.bus);
     self.bus = self.handle_cpu_bus(bus);
-    self.timer_events = self.timer.tick(
-        prev_timer,
-        self.timer_events.overflow,
-        self.bus,
-    );
-    if (self.timer_events.overflow) {
-        self.bus.int.timer = 1;
-    }
 
     if (self.oam_transfer_cycle != 0) {
         const oam_addr: u16 = 160 - self.oam_transfer_cycle;
@@ -178,9 +176,12 @@ fn write_io(self: *GB, addr: u16, data: u8) void {
     }
     switch (addr) {
         Timer.DIV => {
-            self.memory[Timer.DIV] = 0;
-            self.memory[Timer.SYSCLK_LO] = 0;
+            self.timer.div = 0;
+            self.timer.sysclk_lo = 0;
         },
+        Timer.TIMA => self.timer.tima = data,
+        Timer.TMA => self.timer.tma = data,
+        Timer.TAC => self.timer.tac = @bitCast(data),
         PPU.LCDC => self.ppu.lcdc = @bitCast(data),
         PPU.STAT => { // TODO implement stat write bug.
             const stat: u8 = @bitCast(self.ppu.stat);
@@ -263,6 +264,10 @@ fn read_oam(self: *GB, bus: Pins) Pins {
 fn read_io(self: *GB, bus: Pins) Pins {
     if (self.oam_transfer_cycle != 0) return bus;
     return switch (bus.abus) {
+        Timer.DIV => bus.set(.{ .dbus = self.timer.div }),
+        Timer.TIMA => bus.set(.{ .dbus = self.timer.tima }),
+        Timer.TMA => bus.set(.{ .dbus = self.timer.tma }),
+        Timer.TAC => bus.set(.{ .dbus = @as(u8, @bitCast(self.timer.tac)) }),
         PPU.LCDC => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.lcdc)) }),
         PPU.STAT => bus.set(.{ .dbus = @as(u8, @bitCast(self.ppu.stat)) }),
         PPU.SCY => bus.set(.{ .dbus = self.ppu.scy }),
@@ -306,16 +311,6 @@ fn read_if(self: *GB, bus: Pins) Pins {
 
 fn read_ie(self: *GB, bus: Pins) Pins {
     return bus.set(.{ .dbus = @as(u8, @bitCast(self.sm83.ie)) });
-}
-
-fn timer_from_mmio(self: *GB) Timer {
-    return .{
-        .sysclk_lo = self.memory[Timer.SYSCLK_LO],
-        .div = self.memory[Timer.DIV],
-        .tima = self.memory[Timer.TIMA],
-        .tma = self.memory[Timer.TMA],
-        .tac = @bitCast(self.memory[Timer.TAC]),
-    };
 }
 
 pub fn debug_log(self: *GB, writer: *std.Io.Writer) !void {

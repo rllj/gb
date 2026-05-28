@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) !void {
     });
     const install_emu = b.addInstallArtifact(emu, .{});
     const run_emu = b.addRunArtifact(emu);
+    run_emu.addArgs(b.args orelse &.{});
 
     const install_emu_step = b.step("emu", "Compile the emu");
     install_emu_step.dependOn(&install_emu.step);
